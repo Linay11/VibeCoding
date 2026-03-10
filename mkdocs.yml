@@ -1,0 +1,40 @@
+site_name: "mlopt"
+site_description: 'Machine Learning Optimizer'
+site_author: "Bartolomeo Stellato"
+
+nav:
+  - Home: index.md
+
+  - Getting started: getting_started.md
+
+  - Manual:
+    - Learners:
+      - XGBoost: learners/xgboost.md
+      - OptimalTreees: learners/optimal_trees.md
+      - Pytorch: learners/pytorch.md
+
+  - Examples:
+    - Knapsack: examples/knapsack.md
+    - Inventory: examples/inventory.md
+
+theme:
+  name: 'material'
+  palette:
+    primary: 'blue'
+    accent: 'light blue'
+
+
+
+repo_name: 'bstellato/mlopt'
+repo_url: 'https://github.com/bstellato/mlopt'
+
+
+extra:
+  social:
+    - type: 'github'
+      link: 'https://github.com/bstellato'
+
+
+
+copyright: 'Copyright &copy; 2020 Bartolomeo Stellato'
+
