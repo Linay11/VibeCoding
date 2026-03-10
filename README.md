@@ -1,64 +1,175 @@
-# Machine Learning Optimizer
+# ML Optimization Workspace
 
-`mlopt` is a package to learn how to solve numerical optimization problems from data. It relies on [cvxpy](https://cvxpy.org) for modeling and [gurobi](https://www.gurobi.com/) for solving the problem offline.
+An optimization research workspace that combines the `mlopt` core, scenario pipelines, a thin FastAPI adapter, and a local React workbench for rapid iteration.
 
-`mlopt` learns how to solve programs using [pytorch](https://pytorch.org/) ([pytorch-lightning](https://github.com/PyTorchLightning/pytorch-lightning)), [xgboost](https://xgboost.readthedocs.io/en/latest/) or [optimaltrees](https://docs.interpretable.ai/stable). The machine learning hyperparameter optimization is performed using [optuna](https://optuna.org/).
+This repository is now organized for a practical developer workflow:
+- reusable optimization core (`mlopt/`)
+- scenario implementations (`online_optimization/`)
+- non-invasive API adapter (`backend_adapter/`)
+- local frontend (`frontend/`)
+- explicit setup docs and helper scripts (`docs/`, `scripts/`)
 
-Online, `mlopt` only requires to predict the strategy and solve a linear system using [scikit-umfpack](https://github.com/scikit-umfpack/scikit-umfpack).
+---
 
-## Examples
+## What This Project Does
 
-To see `mlopt` in action, have a look at the notebooks in the [examples/](./examples/) folder.
+This project provides:
+1. Core optimization learning capabilities from `mlopt`.
+2. Scenario-specific experiment logic from `online_optimization`.
+3. A minimal backend adapter exposing stable frontend-facing APIs.
+4. A frontend workbench with API-first + fallback behavior for local development.
 
-## Documentation
+---
 
-Coming soon at [mlopt.org](https://mlopt.org)!
+## Current Capabilities
 
-## Citing
+- Run optimization scenarios through a lightweight API layer.
+- Use a local frontend against a remote AutoDL backend.
+- Connect local frontend to remote backend through SSH local port forwarding.
+- Keep core algorithm modules unchanged while improving dev ergonomics.
 
-If you use `mlopt` for research, please cite the following papers:
+---
 
-* [The Voice of Optimization](https://arxiv.org/pdf/1812.09991.pdf):
+## Repository Structure
 
-  ```
-  @Article{bertsimas2021,
-  author        = {{Bertsimas}, D. and {Stellato}, B.},
-  title         = {The Voice of Optimization},
-  journal       = {Machine Learning},
-  year          = {2021},
-  month         = {2},
-  volume        = {110},
-  issue         = {2},
-  pages         = {249--277},
-  }
-  ```
+```text
+.
+|- mlopt/                    # Core optimization learning engine (existing core)
+|- online_optimization/      # Scenario-specific research and experiment pipelines
+|- backend_adapter/          # Thin FastAPI adapter (non-core)
+|- frontend/                 # React + Vite frontend workbench
+|- docs/
+|  |- DEV_SETUP.md           # End-to-end local + remote integration guide
+|  `- ENV_VARS.md            # Unified environment variable reference
+|- scripts/
+|  |- start_backend.sh       # Start FastAPI adapter on Linux/AutoDL
+|  |- open_tunnel.sh         # Open SSH tunnel to remote backend
+|  |- open_tunnel.ps1        # Open SSH tunnel on Windows PowerShell
+|  `- start_frontend.sh      # Start local frontend with API base
+`- README.md
+```
 
-* [Online Mixed-Integer Optimization in Milliseconds](https://arxiv.org/pdf/1907.02206.pdf)
+---
 
-  ```
-  @article{stellato2019a,
-    author = {{Bertsimas}, D. and {Stellato}, B.},
-    title = {Online Mixed-Integer Optimization in Milliseconds},
-    journal = {arXiv e-prints},
-    year = {2019},
-    month = jul,
-    adsnote = {Provided by the SAO/NASA Astrophysics Data System},
-    adsurl = {https://ui.adsabs.harvard.edu/abs/2019arXiv190702206B},
-    archiveprefix = {arXiv},
-    eprint = {1907.02206},
-    keywords = {Mathematics - Optimization and Control},
-    pdf = {https://arxiv.org/pdf/1907.02206.pdf},
-    primaryclass = {math.OC},
-  }
+## System Architecture (Local Frontend + SSH Tunnel + AutoDL Backend)
 
-  ```
+```mermaid
+flowchart LR
+    A["Local Browser"] --> B["Local Vite Frontend :5173"]
+    B --> C["http://127.0.0.1:8000 (/api/*)"]
+    C --> D["SSH Tunnel -L 8000:127.0.0.1:8000"]
+    D --> E["AutoDL Linux VM"]
+    E --> F["FastAPI backend_adapter :8000"]
+    F --> G["mlopt/ + online_optimization/ existing logic"]
+```
 
+Why this setup:
+- frontend remains fast and local
+- backend compute and dependencies stay on AutoDL
+- no core logic refactor is required
 
-The code to **reproduce the results in the papers** is available at [bstellato/mlopt_benchmarks](https://github.com/bstellato/mlopt_benchmarks).
+---
 
+## Quick Start (Validated Dev Mode)
 
-## Projects using mlopt framework
+Detailed guide:
+- [docs/DEV_SETUP.md](docs/DEV_SETUP.md)
+- [docs/ENV_VARS.md](docs/ENV_VARS.md)
 
+Short version:
 
-* [Learning Mixed-Integer Convex Optimization Strategies for Robot Planning and Control](https://arxiv.org/pdf/2004.03736.pdf)
+1. On AutoDL (Linux), start backend:
+```bash
+cd /path/to/VibeCoding
+./scripts/start_backend.sh
+```
 
+2. On local machine, open SSH tunnel (script):
+```bash
+./scripts/open_tunnel.sh <user@autodl-host>
+```
+
+3. On Windows PowerShell, you can use:
+```powershell
+./scripts/open_tunnel.ps1 -HostName "<autodl-host>" -UserName "<ssh-user>"
+```
+
+4. Or use the validated raw SSH command:
+```bash
+ssh -N -L 8000:127.0.0.1:8000 <user@autodl-host>
+```
+
+5. Start frontend locally:
+```bash
+cd frontend
+cp .env.development.example .env.development
+npm install
+npm run dev
+```
+
+6. Open `http://localhost:5173/workbench` and verify `Data source: Backend API`.
+
+---
+
+## API Overview
+
+API contract reference:
+- [frontend/API_CONTRACT.md](frontend/API_CONTRACT.md)
+
+Current endpoints:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/scenarios` | List available scenario definitions |
+| POST | `/api/runs` | Execute one scenario run |
+| GET | `/api/runs/latest?scenarioId=<id>` | Fetch latest stored run for a scenario |
+
+Error model:
+- `400` invalid arguments
+- `404` not found
+- `500` runtime failure
+
+---
+
+## Troubleshooting
+
+### Frontend still shows mock fallback
+- Check `VITE_API_BASE` in `frontend/.env.development`.
+- Verify tunnel: `curl http://127.0.0.1:8000/api/scenarios`.
+- Verify backend is running on AutoDL and bound to `0.0.0.0:8000`.
+
+### CORS errors in browser
+- Set backend env var:
+  - `BACKEND_ADAPTER_CORS=http://localhost:5173,http://127.0.0.1:5173`
+- Restart backend adapter.
+
+### `/api/runs/latest` returns 404
+- Expected before first successful run.
+- Trigger a run first with `POST /api/runs` (`{"scenarioId":"portfolio"}`).
+
+### Backend import/solver issues
+- Adapter may switch to compatibility mode when runtime deps are unavailable.
+- Check `adapterMode` and `adapterNote` in run payload.
+
+---
+
+## Development Notes
+
+- Core boundaries are intentionally preserved:
+  - no edits in `mlopt/`
+  - no edits in `online_optimization/`
+- Adapter + docs/scripts are used to improve integration workflow only.
+
+---
+
+## Roadmap
+
+Short-term:
+- queued execution for longer scenario jobs
+- richer run history storage (beyond latest)
+- API health and diagnostics endpoint
+
+Mid-term:
+- authentication and multi-user isolation
+- richer chart controls and parameterized scenario runs
+- CI checks for docs + API contract compatibility

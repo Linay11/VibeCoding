@@ -41,6 +41,12 @@ pip install fastapi uvicorn pydantic
 uvicorn backend_adapter.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+Or use repository script:
+
+```bash
+./scripts/start_backend.sh
+```
+
 3. Check APIs:
 
 - `http://localhost:8000/api/scenarios`

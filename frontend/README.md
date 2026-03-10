@@ -75,6 +75,12 @@ You can also copy and edit:
 cp .env.development.example .env.development
 ```
 
+Default `.env.development.example` is already set for SSH tunnel mode:
+
+```bash
+VITE_API_BASE=http://127.0.0.1:8000
+```
+
 ## API fallback behavior
 
 - UI first tries backend endpoints:
