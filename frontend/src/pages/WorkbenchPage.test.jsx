@@ -407,4 +407,86 @@ describe('WorkbenchPage smoke tests', () => {
     expect(screen.getAllByText('Control compat run due to optional dependency gap.').length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText('generated-control')).toBeInTheDocument()
   })
+
+  it('keeps the last selected scenario state when an older latest request resolves late', async () => {
+    const scenarioData = [
+      {
+        id: 'portfolio',
+        name: 'Portfolio Optimization',
+        description: 'Portfolio scenario for smoke test',
+      },
+      {
+        id: 'control',
+        name: 'Control Setcover',
+        description: 'Control scenario for smoke test',
+      },
+    ]
+    const slowOldRequest = createDeferred()
+    const fastNewRequest = createDeferred()
+    const controlReason = 'Control compat run from latest endpoint.'
+    const latePortfolioReason = 'Late portfolio response should be ignored.'
+
+    getScenarios.mockResolvedValueOnce({
+      source: 'api',
+      data: scenarioData,
+      notice: '',
+      noticeTone: 'info',
+    })
+
+    getLatestRun.mockReset()
+    getLatestRun.mockImplementation((scenarioId) => {
+      if (scenarioId === 'portfolio') {
+        return slowOldRequest.promise
+      }
+      if (scenarioId === 'control') {
+        return fastNewRequest.promise
+      }
+      return Promise.resolve(buildRunPayload())
+    })
+
+    render(<WorkbenchPage />)
+
+    await waitFor(() => {
+      expect(getLatestRun).toHaveBeenCalledWith('portfolio')
+    })
+
+    fireEvent.change(screen.getByLabelText('Scenario'), { target: { value: 'control' } })
+
+    await waitFor(() => {
+      expect(getLatestRun).toHaveBeenCalledWith('control')
+    })
+
+    fastNewRequest.resolve(
+      buildRunPayload({
+        mode: 'compat',
+        note: controlReason,
+        generatedAt: 'generated-control-fast',
+      }),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('generated-control-fast')).toBeInTheDocument()
+    })
+
+    slowOldRequest.resolve(
+      buildRunPayload({
+        mode: 'real',
+        note: latePortfolioReason,
+        generatedAt: 'generated-portfolio-late',
+      }),
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const finalSummary = screen.getByRole('region', { name: /run summary/i })
+    const scoped = within(finalSummary)
+    expect(scoped.getByText('Control Setcover')).toBeInTheDocument()
+    expect(scoped.getByText('Compat run')).toBeInTheDocument()
+    expect(scoped.getByText(controlReason)).toBeInTheDocument()
+    expect(scoped.getByText('generated-control-fast')).toBeInTheDocument()
+    expect(screen.getByText('Backend compatibility mode')).toBeInTheDocument()
+    expect(screen.queryByText('generated-portfolio-late')).not.toBeInTheDocument()
+    expect(screen.queryByText(latePortfolioReason)).not.toBeInTheDocument()
+    expect(screen.queryByText('Backend real execution')).not.toBeInTheDocument()
+  })
 })

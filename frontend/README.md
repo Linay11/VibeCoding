@@ -82,6 +82,7 @@ What this currently validates:
   - changing the scenario triggers latest fetch for the selected scenario id
   - Result Summary updates to the new scenario
   - state panel and run mode stay consistent with the new scenario payload
+  - race-safe behavior: late response from a previous scenario does not override the final selected scenario state
   - protects the primary scenario-switch interaction in Workbench demos
 
 Why only this test for now:

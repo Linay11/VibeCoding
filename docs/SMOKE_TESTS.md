@@ -92,6 +92,7 @@ What `test:smoke` covers:
   - changing scenario triggers latest fetch for the new scenario id
   - Result Summary updates with new scenario context
   - state panel/mode switches to match the new scenario response
+  - race-safe behavior: older latest response resolving late does not override the last selected scenario state
   - this guards the core Scenario -> latest -> summary/state linkage against regression
 
 Why this minimal set now:
