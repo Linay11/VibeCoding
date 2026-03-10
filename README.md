@@ -75,6 +75,7 @@ Why this setup:
 Detailed guide:
 - [docs/DEV_SETUP.md](docs/DEV_SETUP.md)
 - [docs/ENV_VARS.md](docs/ENV_VARS.md)
+- [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md)
 
 Short version:
 

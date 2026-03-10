@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend_adapter.errors import APIError
+from backend_adapter.run_contract import normalize_run_payload
 from backend_adapter.run_store import RunStore
 from backend_adapter.runners.scenario_runners import run_scenario_once
 from backend_adapter.scenario_registry import get_scenario, list_scenarios
@@ -87,12 +88,10 @@ def _build_app() -> FastAPI:
         if not isinstance(run_payload, dict):
             raise APIError(500, "RUN_FAILED", "runner did not return a valid payload")
 
-        required_top = ["runId", "scenarioId", "generatedAt", "metrics", "strategies"]
-        if any(k not in run_payload for k in required_top):
-            raise APIError(500, "RUN_FAILED", "runner payload missing required fields")
+        normalized = normalize_run_payload(run_payload, scenario_id=scenario_id)
 
-        app.state.run_store.save_latest(scenario_id, run_payload)
-        return {"run": run_payload}
+        app.state.run_store.save_latest(scenario_id, normalized)
+        return {"run": normalized}
 
     @app.get("/api/runs/latest", response_model=RunResponse)
     async def get_api_runs_latest(
@@ -109,7 +108,9 @@ def _build_app() -> FastAPI:
         if payload is None:
             raise APIError(404, "NOT_FOUND", f"no latest run for scenarioId: {scenario_id}")
 
-        return {"run": payload}
+        normalized = normalize_run_payload(payload, scenario_id=scenario_id)
+        app.state.run_store.save_latest(scenario_id, normalized)
+        return {"run": normalized}
 
     return app
 

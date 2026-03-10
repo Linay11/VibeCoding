@@ -1,286 +1,155 @@
 # Frontend Backend Integration Spec
 
-This document captures the **current API contract expected by the frontend** (as implemented in `frontend/src/services/optimizerApi.js` and consumed in `frontend/src/pages/WorkbenchPage.jsx`).
+This document captures the current contract expected by the Workbench frontend (`frontend/src/services/optimizerApi.js`).
 
-## 1. Scope and Base URL
+## 1. Base URL and Transport
 
-- Frontend API base: `VITE_API_BASE` (env var), default `""` (same origin).
-- Effective request URL: `${VITE_API_BASE}<endpoint_path>`.
-- All requests are sent with header:
-  - `Content-Type: application/json`
-- Any non-2xx response is treated as failure and triggers frontend fallback behavior.
+- API base is read from `VITE_API_BASE`.
+- Effective request URL is `${VITE_API_BASE}<path>`.
+- Requests use `Content-Type: application/json`.
+- Non-2xx responses are treated as API failures by frontend.
 
-## 2. Endpoints Currently Used / Implied
+## 2. Endpoints Used by Frontend
 
 1. `GET /api/scenarios`
-2. `GET /api/runs/latest?scenarioId=<id>`
-3. `POST /api/runs`
+2. `POST /api/runs`
+3. `GET /api/runs/latest?scenarioId=<id>`
 
-No other backend endpoints are currently called by the frontend.
+No other backend endpoints are currently used by Workbench.
 
 ---
 
-## 3. Shared Frontend-Normalized Models
+## 3. Stable Run Payload (Target Contract)
 
-These are the normalized shapes used by UI components after adapter processing.
+Both `POST /api/runs` and `GET /api/runs/latest` should return:
 
-### 3.1 Scenario (normalized)
-
-```ts
-type Scenario = {
-  id: string
-  name: string
-  description: string
-}
-```
-
-### 3.2 RunData (normalized)
-
-```ts
-type RunData = {
-  runId: string
-  scenarioId: string
-  generatedAt: string // ISO timestamp
-  metrics: {
-    solveTimeMs: number
-    infeasibilityRate: number
-    suboptimality: number
+```json
+{
+  "run": {
+    "runId": "run-portfolio-20260310120000000000",
+    "scenarioId": "portfolio",
+    "generatedAt": "2026-03-10T12:00:00.000000+00:00",
+    "metrics": {
+      "solveTimeMs": 42.5,
+      "infeasibilityRate": 0.0,
+      "suboptimality": 0.01
+    },
+    "strategies": [
+      {
+        "id": "strategy-1",
+        "name": "SolverSolution",
+        "feasible": true,
+        "cost": 8.123,
+        "rank": 1
+      }
+    ],
+    "trend": [
+      { "label": "R-6", "value": 48.0 }
+    ],
+    "comparison": [
+      { "label": "SolverSolution", "value": 8.123 }
+    ],
+    "adapterMode": "real",
+    "adapterNote": "portfolio solved via OSQP"
   }
-  strategies: Array<{
-    id: string
-    name: string
-    feasible: boolean
-    cost: number
-    rank: number
-  }>
-  trend: Array<{
-    label: string
-    value: number
-  }>
-  comparison: Array<{
-    label: string
-    value: number
-  }>
 }
 ```
+
+### Required fields
+
+- `run.runId`
+- `run.scenarioId`
+- `run.generatedAt`
+- `run.metrics.solveTimeMs`
+- `run.metrics.infeasibilityRate`
+- `run.metrics.suboptimality`
+- `run.strategies` (array)
+- `run.trend` (array)
+- `run.comparison` (array)
+- `run.adapterMode` (`real` or `compat`)
+- `run.adapterNote` (string, can be diagnostic)
+
+### Optional/compatibility fields accepted by frontend
+
+Frontend still tolerates older shapes for resilience, but backend should avoid relying on them:
+
+- top-level `data` wrapper or direct run object
+- `run.id` as fallback for `runId`
+- `solveTimeMs` / `timeMs` at top level
+- `comparison` alternative key: `comparisons`
 
 ---
 
-## 4. Endpoint Contract Details
+## 4. Scenario List Contract
 
-## 4.1 `GET /api/scenarios`
-
-### Method
-- `GET`
-
-### Request body
-- None
-
-### Accepted response schema (raw)
-Frontend accepts **any one** of:
+`GET /api/scenarios` should return:
 
 ```json
 {
-  "scenarios": [ ... ]
-}
-```
-
-or
-
-```json
-{
-  "data": [ ... ]
-}
-```
-
-or directly:
-
-```json
-[ ... ]
-```
-
-Where each array item can be:
-
-1. String form
-```json
-"portfolio"
-```
-
-2. Object form
-```json
-{
-  "id": "portfolio",
-  "name": "Portfolio Optimization",
-  "description": "..."
-}
-```
-
-### Required fields (for successful API-mode usage)
-- Top-level must resolve to an array via `payload.scenarios`, `payload.data`, or `payload`.
-- Array must normalize to at least one valid scenario; otherwise frontend treats it as failure and falls back.
-
-### Optional fields
-- `id`, `name`, `description` are optional in object form (frontend derives defaults).
-
-### Fallback-derived fields currently handled in frontend
-- If item is string:
-  - `id = item`
-  - `name = item`
-  - `description = "Scenario <index>"`
-- If item object is missing fields:
-  - `id = item.id ?? item.name ?? "scenario-<index>"`
-  - `name = item.name ?? item.id ?? "Scenario <index>"`
-  - `description = item.description ?? "Optimization scenario"`
-- If endpoint fails / invalid / empty:
-  - Uses local `mockScenarios`
-  - Emits UI notice banner with failure reason
-
----
-
-## 4.2 `GET /api/runs/latest?scenarioId=<id>`
-
-### Method
-- `GET`
-
-### Request query
-- `scenarioId` (string), provided by selected scenario in UI.
-
-### Request body
-- None
-
-### Accepted response schema (raw)
-Frontend accepts run object from:
-
-```json
-{
-  "run": { ... }
-}
-```
-
-or
-
-```json
-{
-  "data": { ... }
-}
-```
-
-or directly:
-
-```json
-{ ... }
-```
-
-### Run object fields (raw, any subset accepted)
-```json
-{
-  "runId": "run-123",
-  "id": "run-123",
-  "scenarioId": "portfolio",
-  "generatedAt": "2026-03-10T08:00:00.000Z",
-  "metrics": {
-    "solveTimeMs": 42.1,
-    "infeasibilityRate": 0.01,
-    "suboptimality": 0.02
-  },
-  "solveTimeMs": 42.1,
-  "timeMs": 42.1,
-  "infeasibilityRate": 0.01,
-  "suboptimality": 0.02,
-  "strategies": [
+  "scenarios": [
     {
-      "id": "s1",
-      "name": "Strategy A",
-      "feasible": true,
-      "cost": 8.9,
-      "rank": 1
+      "id": "portfolio",
+      "name": "Portfolio Optimization",
+      "description": "..."
     }
-  ],
-  "trend": [
-    { "label": "R-6", "value": 51.3 }
-  ],
-  "comparison": [
-    { "label": "Strategy A", "value": 8.9 }
-  ],
-  "comparisons": [
-    { "label": "Strategy A", "cost": 8.9 }
   ]
 }
 ```
 
-### Required fields (for successful API-mode usage)
-- Response must resolve to an object (`run`, `data`, or direct object).
-- No strictly required inner fields due normalization defaults.
+### Required fields
 
-### Optional fields
-- All fields listed above are optional from frontend perspective.
+- top-level `scenarios` array
+- each item should include `id`, `name`, `description`
 
-### Fallback-derived fields currently handled in frontend
-- `runId = raw.runId ?? raw.id ?? "run-<scenarioId>-<timestamp>"`
-- `scenarioId = raw.scenarioId ?? request.scenarioId`
-- `generatedAt = raw.generatedAt ?? new Date().toISOString()`
-- Metrics:
-  - `solveTimeMs = raw.metrics.solveTimeMs ?? raw.solveTimeMs ?? raw.timeMs ?? 0`
-  - `infeasibilityRate = raw.metrics.infeasibilityRate ?? raw.infeasibilityRate ?? 0`
-  - `suboptimality = raw.metrics.suboptimality ?? raw.suboptimality ?? 0`
-- Strategy rows:
-  - `id = row.id ?? "strategy-<index>"`
-  - `name = row.name ?? "Strategy <index>"`
-  - `feasible = Boolean(row.feasible)`
-  - `cost = Number(row.cost ?? 0)`
-  - `rank = Number(row.rank ?? <index>)`
-- Trend rows:
-  - from `trend[]`, each `value = value ?? solveTimeMs ?? solve ?? 0`
-  - if `trend` missing/empty in runData, UI derives synthetic trend from `metrics.solveTimeMs`
-- Comparison rows:
-  - from `comparison[]` or `comparisons[]`, each `value = value ?? cost ?? 0`
-  - if missing/empty, UI derives comparison from top 4 strategy rows (`rank`, `cost`)
-- If endpoint fails / invalid:
-  - Uses local `buildMockRun(scenarioId)`
-  - Emits UI notice banner with failure reason
+Frontend still tolerates legacy forms (`data` wrapper, raw array, string items), but this is not recommended for backend.
 
 ---
 
-## 4.3 `POST /api/runs`
+## 5. Error Contract
 
-### Method
-- `POST`
+Backend errors should follow:
 
-### Request body
 ```json
 {
-  "scenarioId": "portfolio"
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "no latest run for scenarioId: portfolio"
+  }
 }
 ```
 
-### Required request fields
-- `scenarioId: string`
-
-### Accepted response schema
-- Same as `GET /api/runs/latest` (Section 4.2).
-
-### Required response fields (for successful API-mode usage)
-- Same as `GET /api/runs/latest`: response must resolve to an object.
-
-### Optional response fields
-- Same as `GET /api/runs/latest`.
-
-### Fallback-derived fields currently handled in frontend
-- Same normalization and field derivation as `GET /api/runs/latest`.
-- On failure:
-  - Uses `buildMockRun(scenarioId)`
-  - Emits UI notice banner with failure reason
+Recommended status mapping:
+- `400` invalid arguments (`INVALID_ARGUMENT`)
+- `404` not found (`NOT_FOUND`)
+- `500` runtime failure (`RUN_FAILED`)
 
 ---
 
-## 5. Integration Notes for Backend Team
+## 6. Mode Semantics (UI)
 
-1. To avoid fallback mode, ensure all three endpoints return 2xx and JSON.
-2. For best UX, return:
-   - stable `runId`
-   - fully populated `metrics`
-   - `strategies` array
-   - optional `trend` and `comparison` for chart precision
-3. Wrapper compatibility is flexible:
-   - array/object can be under `data` or `run`, or returned directly.
-4. Frontend behavior is resilient, but missing values may show as `0`, generated IDs, or derived chart data.
+Workbench displays three execution/data modes:
+
+- `real`: backend actually solved scenario using runtime solver stack
+- `compat`: backend returned compatibility run (still from backend adapter), usually due solver/dependency/runtime constraints
+- `fallback`: frontend generated local mock run because API request failed or latest data was unavailable
+
+Mode source:
+- API success: mode comes from `run.adapterMode`
+- API failure: mode is frontend-local `fallback`
+
+Reason source:
+- API success: `run.adapterNote`
+- API failure: classified frontend failure reason (network / backend_failed / no_latest / request_invalid)
+
+---
+
+## 7. Frontend Fallback-Derived Fields (Still Present, Should Be Rare)
+
+If backend payload is incomplete, frontend may derive:
+
+- `runId` from scenario + timestamp
+- `generatedAt` from current timestamp
+- `trend` from `metrics.solveTimeMs`
+- `comparison` from top strategy rows
+
+These are resilience-only fallbacks. Backend should provide full stable run payload to minimize derivation.

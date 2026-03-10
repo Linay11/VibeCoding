@@ -7,6 +7,7 @@ This document describes the validated integration flow used in this repository:
 
 Related reference:
 - [ENV_VARS.md](ENV_VARS.md)
+- [SMOKE_TESTS.md](SMOKE_TESTS.md)
 
 ---
 

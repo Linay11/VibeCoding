@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 from pydantic import BaseModel, Field
 
@@ -43,13 +43,13 @@ class RunOut(BaseModel):
     strategies: List[StrategyOut]
     trend: List[TrendPointOut] = Field(default_factory=list)
     comparison: List[ComparisonPointOut] = Field(default_factory=list)
-    adapterMode: Optional[str] = Field(
-        default=None,
+    adapterMode: str = Field(
+        default="compat",
         description="Adapter execution mode: real or compat",
     )
-    adapterNote: Optional[str] = Field(
-        default=None,
-        description="Execution note for diagnostics",
+    adapterNote: str = Field(
+        default="",
+        description="Execution reason/details for diagnostics",
     )
 
 
@@ -72,4 +72,3 @@ class ErrorBody(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: ErrorBody
-

@@ -23,7 +23,7 @@ function AppShell({ children }) {
             </span>
             <span className="brand-text">
               <strong>mlopt</strong>
-              <small>Frontend MVP</small>
+              <small>Experiment Dashboard</small>
             </span>
           </NavLink>
 
@@ -52,7 +52,7 @@ function AppShell({ children }) {
 
       <footer className="site-footer">
         <div className="shell footer-content">
-          <p>Built with React + Vite. Existing backend logic remains unchanged.</p>
+          <p>Optimization Experiment Dashboard built with React + Vite. Existing core solver logic remains unchanged.</p>
         </div>
       </footer>
     </>

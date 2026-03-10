@@ -2,19 +2,19 @@ import { Link } from 'react-router-dom'
 
 const highlights = [
   {
-    title: 'Model-Aware Workflow',
+    title: 'Experiment-First Workflow',
     description:
-      'Move from scenario selection to run output and strategy comparison without switching tools.',
+      'Move from scenario selection to run output, trend analysis, and strategy explanation in one page.',
   },
   {
-    title: 'Backend-Safe Integration',
+    title: 'Transparent Runtime Modes',
     description:
-      'The UI reads API data when available and never changes existing optimization core logic.',
+      'Instantly see whether a result is real backend execution, adapter compat mode, or frontend fallback.',
   },
   {
-    title: 'Practical MVP Defaults',
+    title: 'Resilient Demo Experience',
     description:
-      'If backend endpoints are offline, the app falls back to demo data so pages stay usable.',
+      'If endpoints are unavailable, the dashboard stays explorable with explicit fallback indicators.',
   },
 ]
 
@@ -22,12 +22,12 @@ function HomePage() {
   return (
     <div className="fade-in">
       <section className="hero card">
-        <p className="eyebrow">Machine Learning Optimizer</p>
-        <h1>Operate optimization experiments with a modern UI.</h1>
+        <p className="eyebrow">Optimization Experiment Dashboard</p>
+        <h1>Analyze optimization runs with clear, explainable runtime context.</h1>
         <p className="lead">
-          This frontend MVP adds a clean shell around your optimizer workflows: clear navigation,
-          guided run actions, and readable run summaries. It is built for progressive backend
-          integration.
+          This frontend dashboard wraps your optimizer workflows with structured summaries, stable
+          run diagnostics, and analysis-ready views. It is designed for practical engineering demos
+          and iterative backend integration.
         </p>
         <div className="hero-actions">
           <Link className="btn btn-primary" to="/workbench">

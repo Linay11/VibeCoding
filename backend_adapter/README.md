@@ -8,6 +8,18 @@ This folder adds a thin API adapter without changing existing core logic in `mlo
 - `POST /api/runs`
 - `GET /api/runs/latest`
 
+## Run payload stability
+
+`POST /api/runs` and `GET /api/runs/latest` now normalize run payloads to a stable shape before returning:
+
+- `runId`, `scenarioId`, `generatedAt`
+- `metrics.solveTimeMs`, `metrics.infeasibilityRate`, `metrics.suboptimality`
+- `strategies[]`, `trend[]`, `comparison[]`
+- `adapterMode` (`real` or `compat`)
+- `adapterNote` (diagnostic reason/details)
+
+Latest-run reads are self-healing: legacy stored payloads are normalized on read and written back.
+
 ## Error behavior
 
 The adapter returns consistent error responses:
@@ -58,6 +70,23 @@ Or use repository script:
 curl -X POST "http://localhost:8000/api/runs" \
   -H "Content-Type: application/json" \
   -d "{\"scenarioId\":\"portfolio\"}"
+```
+
+## Smoke tests
+
+Test file:
+- `backend_adapter/tests/test_run_endpoints.py`
+
+Install minimal test deps if needed:
+
+```bash
+pip install pytest httpx
+```
+
+Run smoke tests:
+
+```bash
+python -m pytest backend_adapter/tests/test_run_endpoints.py -q
 ```
 
 ## Environment variables

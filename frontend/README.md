@@ -47,6 +47,47 @@ npm run lint
 npm run build
 ```
 
+For end-to-end smoke verification (backend + frontend), see:
+- `../docs/SMOKE_TESTS.md`
+
+## Minimal component smoke test
+
+Run the focused Workbench smoke test:
+
+```bash
+npm run test:smoke
+```
+
+What this currently validates:
+- Workbench renders with mocked fallback and compat responses
+- Result Summary shows the three most critical runtime-context fields:
+  - data source
+  - run mode
+  - mode reason
+- In compat mode, mode reason stays consistent between summary and state panel
+- `Run Experiment` interaction state transitions:
+  - `Run Experiment` -> `Running...`
+  - buttons disabled during request
+  - returns to stable result state after resolve
+- `Refresh Latest` error branches:
+  - `404 no latest` fallback response
+  - network failure fallback response
+  - summary / state panel / notice keep consistent, non-conflicting messaging
+- `Refresh Latest` success branches:
+  - compat mode success refresh
+  - real mode success refresh
+  - validates button flow `Refreshing...` -> `Refresh Latest`
+  - validates generated timestamp display updates after refresh
+- Scenario switch linkage:
+  - changing the scenario triggers latest fetch for the selected scenario id
+  - Result Summary updates to the new scenario
+  - state panel and run mode stay consistent with the new scenario payload
+  - protects the primary scenario-switch interaction in Workbench demos
+
+Why only this test for now:
+- this is the highest-value demo path with the smallest maintenance cost
+- it protects against accidental UI regressions in runtime explainability
+
 ## Optional environment variable
 
 Use a backend base URL if API is not on the same origin:
@@ -87,8 +128,15 @@ VITE_API_BASE=http://127.0.0.1:8000
   - `GET /api/scenarios`
   - `GET /api/runs/latest?scenarioId=<id>`
   - `POST /api/runs`
-- If a request fails, the page remains functional with mock data.
-- A visible notice banner explains why fallback happened.
+- If a request fails, the page remains functional with local fallback data.
+- Workbench explicitly labels run mode:
+  - `real`: actual backend run
+  - `compat`: backend compatibility run
+  - `fallback`: frontend-generated fallback run
+- Notice messages distinguish common failure types:
+  - network unreachable
+  - backend runtime failure
+  - no latest run data yet (`/api/runs/latest` 404)
 
 ## Chart data source
 
