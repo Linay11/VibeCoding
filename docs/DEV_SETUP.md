@@ -47,6 +47,37 @@ BACKEND_ADAPTER_PORT=8000 \
 ./scripts/start_backend.sh
 ```
 
+### Check power-118 real-mode prerequisites
+
+Before trying `power-118` real runs on AutoDL, run:
+
+```bash
+cd /path/to/VibeCoding
+python scripts/check_power118_env.py
+```
+
+What to look for:
+- `Real mode ready: YES`
+- `gurobipy import` shows `PASS`
+- `Gurobi model init` shows `PASS`
+- `118_data.xls readable` shows `PASS`
+- `check_gurobi_runtime call` shows `PASS`
+- `real-run preconditions` shows `PASS`
+
+If one of these fails, check in this order:
+- `gurobipy` package and Gurobi license
+- `pandas` / `xlrd`
+- `external/power118/118_data.xls`
+- `external/power118/SCUC_118_new.py`
+
+When the check passes, you can continue with:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/runs" \
+  -H "Content-Type: application/json" \
+  -d '{"scenarioId":"power-118"}'
+```
+
 ---
 
 ## 3. Open SSH Tunnel on Local Machine

@@ -1,0 +1,131 @@
+{
+  "power-118": {
+    "runId": "run-power-118-20260311083238683719",
+    "scenarioId": "power-118",
+    "generatedAt": "2026-03-11T08:32:38.683736+00:00",
+    "metrics": {
+      "solveTimeMs": 349.0570999992997,
+      "infeasibilityRate": 0.0,
+      "suboptimality": 0.0
+    },
+    "strategies": [],
+    "trend": [
+      {
+        "label": "H1",
+        "value": 2144.99999142
+      },
+      {
+        "label": "H2",
+        "value": 2437.49999025
+      },
+      {
+        "label": "H3",
+        "value": 2144.99999142
+      },
+      {
+        "label": "H4",
+        "value": 2404.99999038
+      },
+      {
+        "label": "H5",
+        "value": 2047.49999181
+      },
+      {
+        "label": "H6",
+        "value": 2632.49998947
+      },
+      {
+        "label": "H7",
+        "value": 2794.99998882
+      },
+      {
+        "label": "H8",
+        "value": 3880.499984478
+      },
+      {
+        "label": "H9",
+        "value": 3847.999984608
+      },
+      {
+        "label": "H10",
+        "value": 3054.99998778
+      },
+      {
+        "label": "H11",
+        "value": 2456.999990172
+      },
+      {
+        "label": "H12",
+        "value": 2781.999988872
+      },
+      {
+        "label": "H13",
+        "value": 3464.499986142
+      },
+      {
+        "label": "H14",
+        "value": 3249.999987
+      },
+      {
+        "label": "H15",
+        "value": 3932.49998427
+      },
+      {
+        "label": "H16",
+        "value": 4341.999982632
+      },
+      {
+        "label": "H17",
+        "value": 5199.9999792
+      },
+      {
+        "label": "H18",
+        "value": 5797.999976808
+      },
+      {
+        "label": "H19",
+        "value": 6109.99997556
+      },
+      {
+        "label": "H20",
+        "value": 5693.999977224
+      },
+      {
+        "label": "H21",
+        "value": 5667.999977328
+      },
+      {
+        "label": "H22",
+        "value": 5524.9999779
+      },
+      {
+        "label": "H23",
+        "value": 5069.99997972
+      },
+      {
+        "label": "H24",
+        "value": 4289.99998284
+      }
+    ],
+    "comparison": [
+      {
+        "label": "Gen 27",
+        "value": 420.0
+      },
+      {
+        "label": "Gen 28",
+        "value": 420.0
+      },
+      {
+        "label": "Gen 11",
+        "value": 350.0
+      },
+      {
+        "label": "Gen 4",
+        "value": 300.0
+      }
+    ],
+    "adapterMode": "compat",
+    "adapterNote": "power-118 compat mode: runtime blocked at import: gurobipy import failed: No module named 'gurobipy'. trend is mapped from real hourly load totals in 118_data.xls. comparison is mapped from generator Pmax preview because solved dispatch is unavailable. metrics other than solveTimeMs are temporary compatibility placeholders. Workbook=external/power118/118_data.xls. Script=external/power118/SCUC_118_new.py. peakLoad=6109.99997556."
+  }
+}

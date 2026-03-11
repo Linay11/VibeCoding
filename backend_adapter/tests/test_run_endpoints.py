@@ -93,3 +93,20 @@ def test_latest_returns_stable_run_contract_after_post(monkeypatch, tmp_path) ->
     run = payload.get("run")
     assert isinstance(run, dict)
     _assert_run_contract(run, "portfolio")
+
+
+def test_power118_is_listed_and_returns_stable_run_contract(monkeypatch, tmp_path) -> None:
+    client = _make_client(monkeypatch, str(tmp_path / "latest_runs.json"))
+
+    scenarios_response = client.get("/api/scenarios")
+    assert scenarios_response.status_code == 200
+    scenarios = scenarios_response.json().get("scenarios", [])
+    assert any(item.get("id") == "power-118" for item in scenarios)
+
+    run_response = client.post("/api/runs", json={"scenarioId": "power-118"})
+    assert run_response.status_code == 200
+    run = run_response.json().get("run")
+    assert isinstance(run, dict)
+    _assert_run_contract(run, "power-118")
+    assert run.get("adapterMode") in {"real", "compat"}
+    assert "power-118" in run.get("adapterNote", "")

@@ -27,6 +27,11 @@ SCENARIOS: List[ScenarioDef] = [
         name="Obstacle Avoidance",
         description="Single-run adapter over online_optimization.obstacle problem builder.",
     ),
+    ScenarioDef(
+        id="power-118",
+        name="Power 118 SCUC",
+        description="Single-run adapter over external/power118/SCUC_118_new.py with 118_data.xls.",
+    ),
 ]
 
 SCENARIO_MAP: Dict[str, ScenarioDef] = {s.id: s for s in SCENARIOS}
@@ -41,4 +46,3 @@ def list_scenarios() -> List[dict]:
 
 def get_scenario(scenario_id: str) -> Optional[ScenarioDef]:
     return SCENARIO_MAP.get(scenario_id)
-

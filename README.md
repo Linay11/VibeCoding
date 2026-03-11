@@ -1,176 +1,199 @@
-# ML Optimization Workspace
+# VibeCoding
 
-An optimization research workspace that combines the `mlopt` core, scenario pipelines, a thin FastAPI adapter, and a local React workbench for rapid iteration.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![React](https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61dafb)
+![FastAPI](https://img.shields.io/badge/API-FastAPI-009688)
+![Python](https://img.shields.io/badge/Backend-Python-3776ab)
+[![GitHub stars](https://img.shields.io/github/stars/Linay11/VibeCoding?style=social)](https://github.com/Linay11/VibeCoding/stargazers)
 
-This repository is now organized for a practical developer workflow:
-- reusable optimization core (`mlopt/`)
-- scenario implementations (`online_optimization/`)
-- non-invasive API adapter (`backend_adapter/`)
-- local frontend (`frontend/`)
-- explicit setup docs and helper scripts (`docs/`, `scripts/`)
+An optimization experiment workbench that connects a local React UI with remote compute through a thin FastAPI adapter.
 
----
+## Table of Contents
 
-## What This Project Does
+- [Overview](#overview)
+- [Project At A Glance](#project-at-a-glance)
+- [Architecture](#architecture)
+- [Features](#features)
+- [Demo](#demo)
+- [Demo Workflow](#demo-workflow)
+- [Screenshots](#screenshots)
+- [Repository Structure](#repository-structure)
+- [Quick Start](#quick-start)
+- [Development Workflow](#development-workflow)
+- [API Endpoints](#api-endpoints)
+- [Tests](#tests)
+- [Roadmap](#roadmap)
+- [License](#license)
 
-This project provides:
-1. Core optimization learning capabilities from `mlopt`.
-2. Scenario-specific experiment logic from `online_optimization`.
-3. A minimal backend adapter exposing stable frontend-facing APIs.
-4. A frontend workbench with API-first + fallback behavior for local development.
+## Overview
 
----
+VibeCoding is built to make optimization experiments easier to run, inspect, and iterate on from the browser.
+It keeps the core logic in `mlopt/` and `online_optimization/`, adds a lightweight `backend_adapter/` for stable APIs, and provides a React + Vite workbench for scenario-driven experiment workflows.
 
-## Current Capabilities
+The current development setup is designed for a practical split:
+- frontend runs locally for fast iteration
+- backend runs on AutoDL for compute-heavy execution
+- SSH tunneling connects the local UI to the remote backend
 
-- Run optimization scenarios through a lightweight API layer.
-- Use a local frontend against a remote AutoDL backend.
-- Connect local frontend to remote backend through SSH local port forwarding.
-- Keep core algorithm modules unchanged while improving dev ergonomics.
+## Project At A Glance
 
----
+- UI: React + Vite Workbench
+- API layer: FastAPI `backend_adapter`
+- Optimization core: `mlopt/` and `online_optimization/`
+- Recommended dev mode: local frontend + remote AutoDL backend
+
+## Architecture
+
+```text
+Browser
+  |
+  v
+React + Vite Frontend
+  |
+  v
+FastAPI backend_adapter
+  |
+  v
+mlopt / online_optimization
+```
+
+```mermaid
+flowchart TD
+    A["Browser"] --> B["React + Vite Frontend"]
+    B --> C["FastAPI backend_adapter"]
+    C --> D["mlopt / online_optimization"]
+```
+
+Supported development mode:
+- local frontend + remote AutoDL backend
+
+Typical dev connection:
+- local browser opens the Workbench
+- frontend sends API requests to `http://127.0.0.1:8000`
+- SSH tunnel forwards that local port to the AutoDL backend
+
+## Features
+
+- Experiment Dashboard
+- Scenario-based experiment runs
+- Result visualization with summary, trend, comparison, and strategy table
+- Real / Compat / Fallback execution modes for clear runtime behavior
+- AutoDL remote compute integration through a thin FastAPI adapter
+- Smoke tests protecting core Workbench interaction flows
+
+## Demo
+
+![Workbench demo](docs/demo/workbench-demo.gif)
+
+## Demo Workflow
+
+1. Select a scenario in the Workbench.
+2. Run an experiment through the backend adapter.
+3. View returned metrics and execution mode.
+4. Analyze trends, comparisons, and strategy ranking.
+
+## Screenshots
+
+### Workbench dashboard
+
+![Workbench dashboard](docs/screenshots/workbench-dashboard.png)
+
+### Result summary
+
+![Result summary](docs/screenshots/result-summary.png)
+
+### Trend / comparison charts
+
+![Trend charts](docs/screenshots/trend-comparison.png)
 
 ## Repository Structure
 
 ```text
-.
-|- mlopt/                    # Core optimization learning engine (existing core)
-|- online_optimization/      # Scenario-specific research and experiment pipelines
-|- backend_adapter/          # Thin FastAPI adapter (non-core)
-|- frontend/                 # React + Vite frontend workbench
-|- docs/
-|  |- DEV_SETUP.md           # End-to-end local + remote integration guide
-|  `- ENV_VARS.md            # Unified environment variable reference
-|- scripts/
-|  |- start_backend.sh       # Start FastAPI adapter on Linux/AutoDL
-|  |- open_tunnel.sh         # Open SSH tunnel to remote backend
-|  |- open_tunnel.ps1        # Open SSH tunnel on Windows PowerShell
-|  `- start_frontend.sh      # Start local frontend with API base
-`- README.md
+VibeCoding
+|- frontend
+|- backend_adapter
+|- mlopt
+|- online_optimization
+|- docs
+|  |- screenshots
+|  `- demo
+`- scripts
 ```
 
----
+## Quick Start
 
-## System Architecture (Local Frontend + SSH Tunnel + AutoDL Backend)
+Backend (AutoDL):
 
-```mermaid
-flowchart LR
-    A["Local Browser"] --> B["Local Vite Frontend :5173"]
-    B --> C["http://127.0.0.1:8000 (/api/*)"]
-    C --> D["SSH Tunnel -L 8000:127.0.0.1:8000"]
-    D --> E["AutoDL Linux VM"]
-    E --> F["FastAPI backend_adapter :8000"]
-    F --> G["mlopt/ + online_optimization/ existing logic"]
-```
-
-Why this setup:
-- frontend remains fast and local
-- backend compute and dependencies stay on AutoDL
-- no core logic refactor is required
-
----
-
-## Quick Start (Validated Dev Mode)
-
-Detailed guide:
-- [docs/DEV_SETUP.md](docs/DEV_SETUP.md)
-- [docs/ENV_VARS.md](docs/ENV_VARS.md)
-- [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md)
-
-Short version:
-
-1. On AutoDL (Linux), start backend:
 ```bash
-cd /path/to/VibeCoding
+cd VibeCoding
 ./scripts/start_backend.sh
 ```
 
-2. On local machine, open SSH tunnel (script):
-```bash
-./scripts/open_tunnel.sh <user@autodl-host>
-```
+Open SSH tunnel from local machine:
 
-3. On Windows PowerShell, you can use:
-```powershell
-./scripts/open_tunnel.ps1 -HostName "<autodl-host>" -UserName "<ssh-user>"
-```
-
-4. Or use the validated raw SSH command:
 ```bash
 ssh -N -L 8000:127.0.0.1:8000 <user@autodl-host>
 ```
 
-5. Start frontend locally:
+Local frontend:
+
 ```bash
 cd frontend
-cp .env.development.example .env.development
 npm install
 npm run dev
 ```
 
-6. Open `http://localhost:5173/workbench` and verify `Data source: Backend API`.
+Open the app at [http://localhost:5173/workbench](http://localhost:5173/workbench).
 
----
+If needed, point the frontend to the tunnel endpoint with `VITE_API_BASE=http://127.0.0.1:8000`.
 
-## API Overview
+For the full environment and tunnel setup, see [docs/DEV_SETUP.md](docs/DEV_SETUP.md).
 
-API contract reference:
-- [frontend/API_CONTRACT.md](frontend/API_CONTRACT.md)
+## Development Workflow
 
-Current endpoints:
+- frontend runs locally with Vite
+- backend runs on AutoDL with `backend_adapter`
+- SSH tunnel maps local `127.0.0.1:8000` to the remote backend
+- the Workbench uses the backend when available and falls back gracefully when it is not
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | `/api/scenarios` | List available scenario definitions |
-| POST | `/api/runs` | Execute one scenario run |
-| GET | `/api/runs/latest?scenarioId=<id>` | Fetch latest stored run for a scenario |
+## API Endpoints
 
-Error model:
-- `400` invalid arguments
-- `404` not found
-- `500` runtime failure
+- `GET /api/scenarios`: list available scenarios for the Workbench
+- `POST /api/runs`: run an experiment for the selected scenario
+- `GET /api/runs/latest`: fetch the latest run result for a scenario
 
----
+## Tests
 
-## Troubleshooting
+Frontend checks:
 
-### Frontend still shows mock fallback
-- Check `VITE_API_BASE` in `frontend/.env.development`.
-- Verify tunnel: `curl http://127.0.0.1:8000/api/scenarios`.
-- Verify backend is running on AutoDL and bound to `0.0.0.0:8000`.
+```bash
+cd frontend
+npm run test:smoke
+npm run lint
+```
 
-### CORS errors in browser
-- Set backend env var:
-  - `BACKEND_ADAPTER_CORS=http://localhost:5173,http://127.0.0.1:5173`
-- Restart backend adapter.
+Backend smoke check:
 
-### `/api/runs/latest` returns 404
-- Expected before first successful run.
-- Trigger a run first with `POST /api/runs` (`{"scenarioId":"portfolio"}`).
+```bash
+python -m pytest backend_adapter/tests/test_run_endpoints.py -q
+```
 
-### Backend import/solver issues
-- Adapter may switch to compatibility mode when runtime deps are unavailable.
-- Check `adapterMode` and `adapterNote` in run payload.
+Smoke tests currently cover the main Workbench interaction path, including:
+- scenario loading
+- run / refresh flows
+- result summary updates
+- fallback and compat rendering
+- trend, comparison, and state consistency
 
----
-
-## Development Notes
-
-- Core boundaries are intentionally preserved:
-  - no edits in `mlopt/`
-  - no edits in `online_optimization/`
-- Adapter + docs/scripts are used to improve integration workflow only.
-
----
+Backend smoke details are documented in [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md).
 
 ## Roadmap
 
-Short-term:
-- queued execution for longer scenario jobs
-- richer run history storage (beyond latest)
-- API health and diagnostics endpoint
+- richer visualization and analysis views
+- experiment history beyond the latest run
+- better real backend execution coverage
+- more complete deployment setup
 
-Mid-term:
-- authentication and multi-user isolation
-- richer chart controls and parameterized scenario runs
-- CI checks for docs + API contract compatibility
+## License
+
+[MIT](LICENSE)

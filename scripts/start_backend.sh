@@ -23,7 +23,6 @@ echo "[backend] host: $HOST port: $PORT"
 echo "[backend] cors: $BACKEND_ADAPTER_CORS"
 echo "[backend] store: $BACKEND_ADAPTER_STORE"
 
-python -m pip install --disable-pip-version-check -q fastapi uvicorn pydantic
+python -m pip install --disable-pip-version-check -q fastapi uvicorn pydantic pandas xlrd
 
 exec uvicorn backend_adapter.main:app --host "$HOST" --port "$PORT"
-

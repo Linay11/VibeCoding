@@ -7,6 +7,8 @@ from typing import Any, Callable, Dict, List, Tuple
 
 import numpy as np
 
+from backend_adapter.services.power118_service import run_power118_once
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -69,7 +71,7 @@ def _run_payload(
 def _compat_run(scenario_id: str, note: str | None = None) -> Dict[str, Any]:
     seed = hash((scenario_id, datetime.now(timezone.utc).strftime("%Y%m%d%H"))) & 0xFFFF
     rnd = random.Random(seed)
-    solve_ms = {"portfolio": 32.0, "control": 54.0, "obstacle": 68.0}.get(scenario_id, 40.0)
+    solve_ms = {"portfolio": 32.0, "control": 54.0, "obstacle": 68.0, "power-118": 92.0}.get(scenario_id, 40.0)
     solve_ms += rnd.uniform(-8, 8)
 
     strategies = [
@@ -287,6 +289,10 @@ def _obstacle_real_run() -> Dict[str, Any]:
     )
 
 
+def _power118_run() -> Dict[str, Any]:
+    return run_power118_once()
+
+
 def _safe_runner(real_runner: Callable[[], Dict[str, Any]], scenario_id: str) -> Dict[str, Any]:
     try:
         return real_runner()
@@ -301,6 +307,7 @@ def run_scenario_once(scenario_id: str) -> Dict[str, Any]:
         return _safe_runner(_control_real_run, "control")
     if scenario_id == "obstacle":
         return _safe_runner(_obstacle_real_run, "obstacle")
+    if scenario_id == "power-118":
+        return _safe_runner(_power118_run, "power-118")
     # Unknown scenario should be rejected at API layer.
     return _compat_run(scenario_id, note="unknown scenario fallback")
-
