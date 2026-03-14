@@ -94,10 +94,11 @@ def build_eval_record(case_id: str, requested_mode: str, run: dict[str, Any], ex
     fallback_reason = run.get("fallbackReason")
     solver_mode_used = run.get("solverModeUsed")
     adapter_mode = run.get("adapterMode")
-    base_mode = "hybrid" if requested_mode.startswith("hybrid_") else requested_mode
+    base_mode = requested_mode
     hybrid_strategy = requested_mode.split("_", 1)[1] if requested_mode.startswith("hybrid_") else None
-    is_fallback = bool(fallback_reason) or adapter_mode == "compat" or (solver_mode_used not in {"", base_mode})
-    fallback_to_mode = solver_mode_used if is_fallback and solver_mode_used not in {"", base_mode} else None
+    comparison_mode = "hybrid" if requested_mode.startswith("hybrid_") else requested_mode
+    is_fallback = bool(fallback_reason) or adapter_mode == "compat" or (solver_mode_used not in {"", comparison_mode})
+    fallback_to_mode = solver_mode_used if is_fallback and solver_mode_used not in {"", comparison_mode} else None
     dispatch_mae, dispatch_mae_unavailable_reason = _dispatch_mae(run, exact_run)
 
     return {

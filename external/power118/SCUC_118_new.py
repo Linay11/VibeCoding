@@ -541,6 +541,8 @@ def solve_scuc_118(
     num_bus = data["summary"]["numBus"]
     num_line = data["summary"]["numLine"]
     num_gen = data["summary"]["numGen"]
+    total_ramp_constraint_count = num_gen * max(T - 1, 0) * 2
+    total_line_constraint_count = num_line * T * 2
     load_at_bus = data["loadAtBus"]
     generators = data["generators"]
     branches = data["branches"]
