@@ -547,7 +547,15 @@ def main() -> int:
     modes = []
     for mode in args.modes:
         normalized_mode = str(mode).strip().lower()
-        if normalized_mode not in {"exact", "hybrid", "ml"}:
+        if normalized_mode == "hybrid":
+            normalized_mode = "hybrid_warm_start"
+        if normalized_mode not in {
+            "exact",
+            "hybrid_warm_start",
+            "hybrid_constraint_aware_v2",
+            "hybrid_constraint_aware_v3",
+            "ml",
+        }:
             raise ValueError(f"Unsupported mode for evaluation: {mode}")
         modes.append(normalized_mode)
 
