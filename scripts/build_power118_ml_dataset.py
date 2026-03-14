@@ -61,6 +61,9 @@ def build_dataset(
     feature_rows: list[dict] = []
     target_rows: list[dict] = []
     metadata_rows: list[dict] = []
+    dropped_infeasible_count = 0
+    dropped_no_incumbent_count = 0
+    dropped_by_status: dict[str, int] = {}
 
     for sample_index, overrides in enumerate(overrides_list, start=1):
         power_data = load_power118_data(data_path=data_path, overrides=overrides)
@@ -71,6 +74,12 @@ def build_dataset(
             time_limit_s=time_limit_s,
         )
         if not result.get("feasible"):
+            status_name = str(result.get("statusName") or "UNKNOWN")
+            dropped_by_status[status_name] = dropped_by_status.get(status_name, 0) + 1
+            if result.get("hasIncumbent"):
+                dropped_infeasible_count += 1
+            else:
+                dropped_no_incumbent_count += 1
             continue
 
         sample_id = f"power118-{sample_index:05d}"
@@ -102,6 +111,9 @@ def build_dataset(
         "seed": seed,
         "requestedSampleCount": int(num_samples),
         "keptSampleCount": int(len(feature_rows)),
+        "droppedInfeasibleCount": int(dropped_infeasible_count),
+        "droppedNoIncumbentCount": int(dropped_no_incumbent_count),
+        "droppedByStatus": dropped_by_status,
         "timeLimitS": float(time_limit_s) if time_limit_s is not None else None,
         "exactBaselineUsed": bool(runtime.get("available")),
         "runtimeStage": runtime.get("stage"),
@@ -167,6 +179,8 @@ def main() -> int:
     print(f"- Output summary: {summary_path}")
     print(f"- Requested samples: {args.num_samples}")
     print(f"- Kept samples: {dataset_summary['keptSampleCount']}")
+    print(f"- Dropped infeasible with incumbent: {dataset_summary['droppedInfeasibleCount']}")
+    print(f"- Dropped with no incumbent: {dataset_summary['droppedNoIncumbentCount']}")
     print(f"- Seed: {args.seed}")
     print(f"- Exact baseline runtime available: {'YES' if dataset_summary['exactBaselineUsed'] else 'NO'}")
     return 0

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from backend_adapter.services.power118_ml_model import (
     write_power118_metadata_file,
     validate_power118_feature_schema,
 )
+from scripts import build_power118_ml_dataset as dataset_script
 from scripts.eval_power118_modes import build_eval_record, summarize_eval_records
 
 
@@ -58,6 +60,15 @@ def _power_data() -> dict:
         "totalLoadByHour": [50.0, 57.0, 53.0],
         "generatorCapacityPreview": [{"label": "Gen 1", "value": 100.0}, {"label": "Gen 2", "value": 100.0}],
     }
+
+
+def _load_solver_module():
+    solver_path = Path(__file__).resolve().parents[2] / "external" / "power118" / "SCUC_118_new.py"
+    spec = importlib.util.spec_from_file_location("external.power118.scuc_118_new_test", solver_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_build_power118_feature_record_contains_hourly_and_generator_features() -> None:
@@ -186,3 +197,123 @@ def test_load_power118_model_artifacts_reads_joblib_and_metadata(tmp_path) -> No
     assert artifacts["loadStatus"] == "loaded"
     assert artifacts["modelVersion"] == metadata["modelVersion"]
     assert artifacts["featureSchemaVersion"] == metadata["featureSchemaVersion"]
+
+
+def test_solution_diagnostics_marks_time_limit_with_incumbent_feasible() -> None:
+    solver_module = _load_solver_module()
+
+    diagnostics = solver_module._solution_diagnostics("TIME_LIMIT", 1)
+
+    assert diagnostics["feasible"] is True
+    assert diagnostics["hasIncumbent"] is True
+    assert diagnostics["terminatedByTimeLimit"] is True
+    assert diagnostics["optimal"] is False
+
+
+def test_solution_diagnostics_marks_time_limit_without_incumbent_infeasible() -> None:
+    solver_module = _load_solver_module()
+
+    diagnostics = solver_module._solution_diagnostics("TIME_LIMIT", 0)
+
+    assert diagnostics["feasible"] is False
+    assert diagnostics["hasIncumbent"] is False
+    assert diagnostics["terminatedByTimeLimit"] is True
+
+
+def test_solution_diagnostics_keeps_optimal_and_suboptimal_feasible() -> None:
+    solver_module = _load_solver_module()
+
+    optimal_diagnostics = solver_module._solution_diagnostics("OPTIMAL", 1)
+    suboptimal_diagnostics = solver_module._solution_diagnostics("SUBOPTIMAL", 1)
+
+    assert optimal_diagnostics["feasible"] is True
+    assert optimal_diagnostics["optimal"] is True
+    assert suboptimal_diagnostics["feasible"] is True
+    assert suboptimal_diagnostics["optimal"] is False
+
+
+def test_dataset_builder_keeps_time_limited_incumbent_samples(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        dataset_script,
+        "_load_power118_module",
+        lambda: type(
+            "FakeModule",
+            (),
+            {
+                "check_gurobi_runtime": staticmethod(lambda: {"available": True, "stage": "ready", "reason": "ok"}),
+                "solve_scuc_118": staticmethod(
+                    lambda data_path=None, write_output=False, overrides=None, time_limit_s=None: {
+                        "feasible": True,
+                        "statusName": "TIME_LIMIT",
+                        "hasIncumbent": True,
+                        "objective": 123.0,
+                        "solveTimeMs": 20000.0,
+                        "unitCommitmentByHour": [[1.0, 1.0], [0.0, 1.0]],
+                        "generatorDispatchByHour": [[20.0, 21.0], [0.0, 10.0]],
+                    }
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        dataset_script,
+        "load_power118_data",
+        lambda data_path=None, overrides=None: {
+            "dataPath": "dummy.xls",
+            "timeHorizon": 2,
+            "bus": [1, 2],
+            "branches": [],
+            "loadRows": [[1, 1, 30.0, 31.0]],
+            "loadAtBus": [[30.0, 0.0], [31.0, 0.0]],
+            "generators": [
+                {
+                    "genId": 1,
+                    "busIndex": 0,
+                    "pMin": 10.0,
+                    "pMax": 100.0,
+                    "a2": 0.01,
+                    "a1": 2.0,
+                    "a0": 3.0,
+                    "rampUp": 40.0,
+                    "rampDown": 40.0,
+                    "startCost": 10.0,
+                    "shutCost": 0.0,
+                    "minUpTime": 1,
+                    "minDownTime": 1,
+                },
+                {
+                    "genId": 2,
+                    "busIndex": 1,
+                    "pMin": 5.0,
+                    "pMax": 60.0,
+                    "a2": 0.01,
+                    "a1": 1.5,
+                    "a0": 2.0,
+                    "rampUp": 30.0,
+                    "rampDown": 30.0,
+                    "startCost": 8.0,
+                    "shutCost": 0.0,
+                    "minUpTime": 1,
+                    "minDownTime": 1,
+                },
+            ],
+            "summary": {"numBus": 2, "numLine": 0, "numGen": 2, "numLoad": 1, "peakLoad": 31.0, "totalDailyLoad": 61.0},
+            "totalLoadByHour": [30.0, 31.0],
+            "generatorCapacityPreview": [{"label": "Gen 1", "value": 100.0}],
+        },
+    )
+    monkeypatch.setattr(dataset_script, "generate_power118_override_set", lambda base_data, n_samples, seed: [{"a": 1}] * n_samples)
+
+    dataset_path, summary_path, summary = dataset_script.build_dataset(
+        num_samples=2,
+        seed=7,
+        output_dir=Path(tmp_path) / "dataset",
+        dataset_filename="dataset.pkl",
+        time_limit_s=20.0,
+    )
+
+    assert dataset_path.exists()
+    assert summary_path.exists()
+    assert summary["keptSampleCount"] == 2
+    assert summary["droppedNoIncumbentCount"] == 0
+    assert summary["droppedInfeasibleCount"] == 0

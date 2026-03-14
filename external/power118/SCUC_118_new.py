@@ -29,6 +29,21 @@ def _status_name(grb_module: Any, status_code: int) -> str:
     return status_map.get(status_code, f"STATUS_{status_code}")
 
 
+def _solution_diagnostics(status_name: str, solution_count: int) -> dict[str, Any]:
+    terminated_by_time_limit = status_name == "TIME_LIMIT"
+    optimal = status_name == "OPTIMAL"
+    has_incumbent = int(solution_count) > 0
+    feasible = status_name in {"OPTIMAL", "SUBOPTIMAL"} or (terminated_by_time_limit and has_incumbent)
+    return {
+        "statusName": status_name,
+        "solutionCount": int(solution_count),
+        "terminatedByTimeLimit": terminated_by_time_limit,
+        "optimal": optimal,
+        "hasIncumbent": has_incumbent,
+        "feasible": feasible,
+    }
+
+
 def _coerce_hourly_scale(scale_value: Any, horizon: int) -> list[float]:
     if isinstance(scale_value, (int, float)):
         return [float(scale_value)] * horizon
@@ -401,22 +416,25 @@ def solve_scuc_118(
 
     status_code = int(model.status)
     status_name = _status_name(GRB.Status, status_code)
-    feasible = status_name in {"OPTIMAL", "SUBOPTIMAL"}
+    solution_count = int(getattr(model, "SolCount", 0) or 0)
+    diagnostics = _solution_diagnostics(status_name, solution_count)
+    feasible = bool(diagnostics["feasible"])
+    has_incumbent = bool(diagnostics["hasIncumbent"])
 
     generator_dispatch_by_hour = [
-        [float(P[g, hour].X) if feasible else 0.0 for hour in range(T)]
+        [float(P[g, hour].X) if has_incumbent else 0.0 for hour in range(T)]
         for g in range(num_gen)
     ]
     unit_commitment_by_hour = [
-        [float(u[g, hour].X) if feasible else 0.0 for hour in range(T)]
+        [float(u[g, hour].X) if has_incumbent else 0.0 for hour in range(T)]
         for g in range(num_gen)
     ]
     line_flow_by_hour = [
-        [float(flow[line_idx, hour].X) if feasible else 0.0 for hour in range(T)]
+        [float(flow[line_idx, hour].X) if has_incumbent else 0.0 for hour in range(T)]
         for line_idx in range(num_line)
     ]
     bus_angle_by_hour = [
-        [float(theta[bus_idx, hour].X) if feasible else 0.0 for hour in range(T)]
+        [float(theta[bus_idx, hour].X) if has_incumbent else 0.0 for hour in range(T)]
         for bus_idx in range(num_bus)
     ]
 
@@ -436,7 +454,7 @@ def solve_scuc_118(
             float(max(abs(line_flow_by_hour[line_idx][hour]) * 100 for line_idx in range(num_line)) if num_line else 0.0)
         )
 
-    if feasible and write_output:
+    if has_incumbent and write_output:
         resolved_output_path = Path(output_path or DEFAULT_OUTPUT_FILE).resolve()
         resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
         df_P = pd.DataFrame(generator_dispatch_by_hour, columns=[f"Hour{hour}" for hour in range(T)])
@@ -459,8 +477,12 @@ def solve_scuc_118(
         "runtime": runtime,
         "statusCode": status_code,
         "statusName": status_name,
+        "solutionCount": diagnostics["solutionCount"],
+        "terminatedByTimeLimit": diagnostics["terminatedByTimeLimit"],
+        "optimal": diagnostics["optimal"],
+        "hasIncumbent": diagnostics["hasIncumbent"],
         "feasible": feasible,
-        "objective": float(model.ObjVal) if feasible else None,
+        "objective": float(model.ObjVal) if has_incumbent else None,
         "solveTimeMs": float(solve_time_ms),
         "summary": data["summary"],
         "totalLoadByHour": data["totalLoadByHour"],
