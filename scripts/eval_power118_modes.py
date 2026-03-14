@@ -94,13 +94,17 @@ def build_eval_record(case_id: str, requested_mode: str, run: dict[str, Any], ex
     fallback_reason = run.get("fallbackReason")
     solver_mode_used = run.get("solverModeUsed")
     adapter_mode = run.get("adapterMode")
-    is_fallback = bool(fallback_reason) or adapter_mode == "compat" or (solver_mode_used not in {"", requested_mode})
-    fallback_to_mode = solver_mode_used if is_fallback and solver_mode_used not in {"", requested_mode} else None
+    base_mode = "hybrid" if requested_mode.startswith("hybrid_") else requested_mode
+    hybrid_strategy = requested_mode.split("_", 1)[1] if requested_mode.startswith("hybrid_") else None
+    is_fallback = bool(fallback_reason) or adapter_mode == "compat" or (solver_mode_used not in {"", base_mode})
+    fallback_to_mode = solver_mode_used if is_fallback and solver_mode_used not in {"", base_mode} else None
     dispatch_mae, dispatch_mae_unavailable_reason = _dispatch_mae(run, exact_run)
 
     return {
         "caseId": case_id,
-        "requestedMode": requested_mode,
+        "requestedMode": run.get("requestedMode") or requested_mode,
+        "baseMode": base_mode,
+        "hybridStrategy": hybrid_strategy,
         "solverModeUsed": solver_mode_used,
         "status": _derive_status(run),
         "adapterMode": adapter_mode,
@@ -121,6 +125,20 @@ def build_eval_record(case_id: str, requested_mode: str, run: dict[str, Any], ex
         "usedModelVersion": run.get("modelVersion"),
         "featureSchemaVersion": run.get("featureSchemaVersion"),
         "modelLoadStatus": run.get("modelLoadStatus"),
+        "constraintAwareHybridUsed": run.get("constraintAwareHybridUsed"),
+        "reducedSolveApplied": run.get("reducedSolveApplied"),
+        "fixedCommitmentCount": run.get("fixedCommitmentCount"),
+        "predictedActiveConstraintCount": run.get("predictedActiveConstraintCount"),
+        "constraintConfidence": run.get("constraintConfidence"),
+        "reducedSolveFallbackReason": run.get("reducedSolveFallbackReason"),
+        "constraintScoringUsed": run.get("constraintScoringUsed"),
+        "criticalConstraintCount": run.get("criticalConstraintCount"),
+        "deferredConstraintCount": run.get("deferredConstraintCount"),
+        "constraintReactivationCount": run.get("constraintReactivationCount"),
+        "stagedSolveRounds": run.get("stagedSolveRounds"),
+        "constraintAwareReductionMode": run.get("constraintAwareReductionMode"),
+        "reducedModelValidated": run.get("reducedModelValidated"),
+        "reductionRejectedReason": run.get("reductionRejectedReason"),
         "statusName": run.get("statusName"),
         "statusCode": run.get("statusCode"),
         "solutionCount": run.get("solutionCount"),
@@ -130,7 +148,7 @@ def build_eval_record(case_id: str, requested_mode: str, run: dict[str, Any], ex
         "exactBaselineAvailable": exact_available,
         "noSpeedupAgainstExact": bool(
             exact_available
-            and requested_mode == "hybrid"
+            and requested_mode.startswith("hybrid_")
             and run.get("runtimeMs") is not None
             and exact_runtime_ms is not None
             and float(run.get("runtimeMs")) >= float(exact_runtime_ms)
@@ -162,6 +180,12 @@ def summarize_eval_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
         objective_gap_values = pd.to_numeric(group["objectiveGapVsExact"], errors="coerce")
         cost_gap_values = pd.to_numeric(group["costGap"], errors="coerce")
         dispatch_mae_values = pd.to_numeric(group["dispatchMAE"], errors="coerce")
+        fixed_commitment_values = pd.to_numeric(group["fixedCommitmentCount"], errors="coerce")
+        predicted_active_values = pd.to_numeric(group["predictedActiveConstraintCount"], errors="coerce")
+        critical_constraint_values = pd.to_numeric(group["criticalConstraintCount"], errors="coerce")
+        deferred_constraint_values = pd.to_numeric(group["deferredConstraintCount"], errors="coerce")
+        reactivation_values = pd.to_numeric(group["constraintReactivationCount"], errors="coerce")
+        staged_round_values = pd.to_numeric(group["stagedSolveRounds"], errors="coerce")
         fallback_rate = float(group["isFallback"].astype(bool).mean())
         feasible_rate = float(group["feasible"].astype(bool).mean())
         success_count = int(group["feasible"].astype(bool).sum())
@@ -170,7 +194,7 @@ def summarize_eval_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
         solver_mode_counts = _reason_counts(group, "solverModeUsed")
         fallback_to_mode_counts = _reason_counts(group, "fallbackToMode")
         no_speedup_feasible_count = 0
-        if str(requested_mode) == "hybrid":
+        if str(requested_mode).startswith("hybrid_"):
             comparable = group.loc[group["feasible"].astype(bool) & group["noSpeedupAgainstExact"].astype(bool)]
             no_speedup_feasible_count = int(len(comparable))
         fallback_case_ids = group.loc[group["isFallback"].astype(bool), "caseId"].astype(str).tolist()
@@ -196,8 +220,17 @@ def summarize_eval_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
                 "dispatchMAEUnavailableReason": None
                 if dispatch_mae_values.notna().any()
                 else "dispatch outputs unavailable for at least one compared mode or exact baseline",
-                "exactFallbackCount": int(group["solverModeUsed"].fillna("").eq("exact").sum()) if str(requested_mode) == "hybrid" else 0,
-                "noSpeedupFeasibleCount": no_speedup_feasible_count if str(requested_mode) == "hybrid" else 0,
+                "exactFallbackCount": int(group["solverModeUsed"].fillna("").eq("exact").sum()) if str(requested_mode).startswith("hybrid_") else 0,
+                "noSpeedupFeasibleCount": no_speedup_feasible_count if str(requested_mode).startswith("hybrid_") else 0,
+                "constraintAwareHybridUsedCount": int(group["constraintAwareHybridUsed"].fillna(False).astype(bool).sum()),
+                "reducedSolveAppliedCount": int(group["reducedSolveApplied"].fillna(False).astype(bool).sum()),
+                "reductionRejectedCount": int(group["reductionRejectedReason"].fillna("").astype(str).str.strip().ne("").sum()),
+                "averageFixedCommitmentCount": float(fixed_commitment_values.mean()) if fixed_commitment_values.notna().any() else None,
+                "averagePredictedActiveConstraintCount": float(predicted_active_values.mean()) if predicted_active_values.notna().any() else None,
+                "averageCriticalConstraintCount": float(critical_constraint_values.mean()) if critical_constraint_values.notna().any() else None,
+                "averageDeferredConstraintCount": float(deferred_constraint_values.mean()) if deferred_constraint_values.notna().any() else None,
+                "averageConstraintReactivationCount": float(reactivation_values.mean()) if reactivation_values.notna().any() else None,
+                "averageStagedSolveRounds": float(staged_round_values.mean()) if staged_round_values.notna().any() else None,
             }
         )
     return summary_rows
@@ -214,6 +247,14 @@ def _summary_payload(
     requested_modes: list[str],
     output_dir: Path,
 ) -> dict[str, Any]:
+    hybrid_rows = [row for row in summary_rows if str(row["requestedMode"]).startswith("hybrid_")]
+    hybrid_fallback_reason_counts: dict[str, int] = {}
+    hybrid_fallback_to_mode_counts: dict[str, int] = {}
+    for row in hybrid_rows:
+        for key, value in row.get("fallbackReasonCounts", {}).items():
+            hybrid_fallback_reason_counts[key] = hybrid_fallback_reason_counts.get(key, 0) + int(value)
+        for key, value in row.get("fallbackToModeCounts", {}).items():
+            hybrid_fallback_to_mode_counts[key] = hybrid_fallback_to_mode_counts.get(key, 0) + int(value)
     return {
         "evaluation": {
             "generatedAt": _utc_now_iso(),
@@ -231,6 +272,8 @@ def _summary_payload(
             "modelLoadStatus": model_artifacts.get("loadStatus"),
             "modelLoadFailureReason": model_artifacts.get("loadFailureReason"),
             "outputDir": str(output_dir),
+            "hybridFallbackReasonCounts": hybrid_fallback_reason_counts,
+            "hybridFallbackToModeCounts": hybrid_fallback_to_mode_counts,
         },
         "modes": summary_rows,
     }
@@ -300,21 +343,29 @@ def _write_report(
             "## Hybrid Fallback Detail",
         ]
     )
-    hybrid_rows = [row for row in summary_rows if row["requestedMode"] == "hybrid"]
+    hybrid_rows = [row for row in summary_rows if str(row["requestedMode"]).startswith("hybrid_")]
     if hybrid_rows:
-        hybrid_row = hybrid_rows[0]
         report_lines.extend(
             [
-                f"- Hybrid fallback count: `{hybrid_row['fallbackCount']}`",
-                f"- Hybrid fallback reason distribution: `{hybrid_row['fallbackReasonCounts']}`",
-                f"- Hybrid fallback-to-mode distribution: `{hybrid_row['fallbackToModeCounts']}`",
-                f"- Hybrid solver mode distribution: `{hybrid_row['solverModeUsedCounts']}`",
-                f"- Hybrid fallback caseIds: `{hybrid_row['fallbackCaseIds']}`",
-                f"- Hybrid cases that ended up using exact: `{hybrid_row['exactFallbackCount']}`",
-                f"- Hybrid feasible cases with no demonstrated speedup signal: `{hybrid_row['noSpeedupFeasibleCount']}`",
+                f"- Hybrid fallback reason distribution: `{evaluation['hybridFallbackReasonCounts']}`",
+                f"- Hybrid fallback-to-mode distribution: `{evaluation['hybridFallbackToModeCounts']}`",
                 "",
             ]
         )
+        for hybrid_row in hybrid_rows:
+            report_lines.extend(
+                [
+                    f"### {hybrid_row['requestedMode']}",
+                    f"- fallback count: `{hybrid_row['fallbackCount']}`",
+                    f"- fallback reason distribution: `{hybrid_row['fallbackReasonCounts']}`",
+                    f"- fallback-to-mode distribution: `{hybrid_row['fallbackToModeCounts']}`",
+                    f"- solver mode distribution: `{hybrid_row['solverModeUsedCounts']}`",
+                    f"- fallback caseIds: `{hybrid_row['fallbackCaseIds']}`",
+                    f"- cases that ended up using exact: `{hybrid_row['exactFallbackCount']}`",
+                    f"- feasible cases with no demonstrated speedup signal: `{hybrid_row['noSpeedupFeasibleCount']}`",
+                    "",
+                ]
+            )
     else:
         report_lines.extend(
             [
@@ -357,7 +408,7 @@ def print_summary(summary_payload: dict[str, Any], summary_rows: list[dict[str, 
             f"avgRuntimeMs={row['averageRuntimeMs'] if row['averageRuntimeMs'] is not None else 'NA'} "
             f"gapVsExact={row['objectiveGapVsExact'] if row['objectiveGapVsExact'] is not None else 'NA'}"
         )
-        if row["requestedMode"] == "hybrid":
+        if str(row["requestedMode"]).startswith("hybrid_"):
             print(f"  fallbackReasonCounts={row['fallbackReasonCounts']}")
             print(f"  fallbackToModeCounts={row['fallbackToModeCounts']}")
             print(f"  solverModeUsedCounts={row['solverModeUsedCounts']}")
@@ -406,7 +457,14 @@ def evaluate_modes(
             exact_baseline_time_limited = bool(exact_run.get("terminatedByTimeLimit", False))
             exact_baseline_has_incumbent = bool(exact_run.get("hasIncumbent", False))
 
+        requested_runs: list[tuple[str, str, str | None]] = []
         for requested_mode in modes:
+            if requested_mode == "hybrid":
+                requested_runs.append(("hybrid_warm_start", "hybrid_warm_start", None))
+            elif requested_mode in {"exact", "hybrid_warm_start", "hybrid_constraint_aware_v2", "hybrid_constraint_aware_v3", "ml"}:
+                requested_runs.append((requested_mode, requested_mode, None))
+
+        for requested_label, requested_mode, hybrid_strategy in requested_runs:
             run = exact_run if requested_mode == "exact" else run_power118_once(
                 run_mode=requested_mode,
                 time_limit_ms=time_limit_ms,
@@ -414,8 +472,9 @@ def evaluate_modes(
                 overrides=case["overrides"],
                 model_path=model_path,
                 metadata_path=metadata_path,
+                hybrid_strategy=hybrid_strategy or "warm_start",
             )
-            records.append(build_eval_record(case["caseId"], requested_mode, run, exact_run))
+            records.append(build_eval_record(case["caseId"], requested_label, run, exact_run))
 
     if require_exact_baseline and not exact_real_available:
         raise RuntimeError("Exact baseline was requested but no real feasible exact baseline was available.")
@@ -473,7 +532,7 @@ def main() -> int:
     parser.add_argument(
         "--modes",
         nargs="+",
-        default=["exact", "hybrid", "ml"],
+        default=["exact", "hybrid_warm_start", "hybrid_constraint_aware_v2", "hybrid_constraint_aware_v3", "ml"],
         help="Requested modes to evaluate.",
     )
     parser.add_argument("--model-path", type=Path, default=None, help="Optional explicit model artifact path for evaluation.")

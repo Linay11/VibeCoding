@@ -39,6 +39,10 @@ class RunOut(BaseModel):
     runId: str
     scenarioId: str
     generatedAt: str
+    requestedMode: str | None = Field(
+        default=None,
+        description="Alias of requestedRunMode for evaluation-oriented consumers",
+    )
     requestedRunMode: str | None = Field(
         default=None,
         description="Requested execution mode for the run before any fallback or downgrade",
@@ -123,11 +127,88 @@ class RunOut(BaseModel):
         default=None,
         description="Whether the returned result contains an incumbent solution",
     )
+    hybridStrategyRequested: str | None = Field(
+        default=None,
+        description="Requested internal hybrid strategy, if applicable",
+    )
+    hybridStrategyUsed: str | None = Field(
+        default=None,
+        description="Actual hybrid strategy used after fallback or downgrade",
+    )
+    constraintAwareHybridUsed: bool | None = Field(
+        default=None,
+        description="Whether the constraint-aware hybrid path was attempted",
+    )
+    reducedSolveApplied: bool | None = Field(
+        default=None,
+        description="Whether reduced solve with fixing or reduction was applied",
+    )
+    fixedCommitmentCount: int | None = Field(
+        default=None,
+        description="Number of commitment binaries fixed during reduced solve",
+    )
+    predictedActiveConstraintCount: int | None = Field(
+        default=None,
+        description="Predicted active constraint count from the constraint model",
+    )
+    constraintConfidence: float | None = Field(
+        default=None,
+        description="Confidence for constraint-aware predictions",
+    )
+    repairAfterReducedSolve: bool | None = Field(
+        default=None,
+        description="Whether a repair or alternate solve path was used after reduced solve",
+    )
+    reducedSolveFallbackReason: str | None = Field(
+        default=None,
+        description="Reason the reduced solve path was abandoned or repaired",
+    )
+    fixedBinaryRatio: float | None = Field(
+        default=None,
+        description="Fraction of commitment binaries fixed during reduced solve",
+    )
+    constraintReductionRatio: float | None = Field(
+        default=None,
+        description="Approximate reduction ratio induced by the constraint-aware strategy",
+    )
+    constraintScoringUsed: bool | None = Field(
+        default=None,
+        description="Whether the constraint scoring model was used",
+    )
+    criticalConstraintCount: int | None = Field(
+        default=None,
+        description="Number of predicted critical constraints kept in the reduced model",
+    )
+    deferredConstraintCount: int | None = Field(
+        default=None,
+        description="Number of predicted deferred constraints omitted from the reduced model",
+    )
+    constraintReactivationCount: int | None = Field(
+        default=None,
+        description="Number of deferred constraints reactivated during staged solve",
+    )
+    stagedSolveRounds: int | None = Field(
+        default=None,
+        description="Number of staged solve rounds used by the hybrid strategy",
+    )
+    constraintAwareReductionMode: str | None = Field(
+        default=None,
+        description="Reduction mode used for the constraint-aware hybrid strategy",
+    )
+    reducedModelValidated: bool | None = Field(
+        default=None,
+        description="Whether the reduced model result passed validation",
+    )
+    reductionRejectedReason: str | None = Field(
+        default=None,
+        description="Reason the reduced model result was rejected",
+    )
 
 
 class RunCreateRequest(BaseModel):
     scenarioId: str
     runMode: str | None = None
+    hybridStrategy: str | None = None
     timeLimitMs: int | None = None
     fallbackToExact: bool = True
 

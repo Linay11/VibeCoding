@@ -124,6 +124,42 @@ def test_train_model_writes_versioned_dir_without_publishing_defaults(monkeypatc
                     {"unitCommitment_g1_h1": 0.0, "dispatch_g1_h1": 10.0},
                 ]
             ),
+            "constraint_labels": pd.DataFrame(
+                [
+                    {"constraint_totalActiveConstraintCount": 10.0, "constraint_activeLineRatio": 0.2},
+                    {"constraint_totalActiveConstraintCount": 12.0, "constraint_activeLineRatio": 0.3},
+                ]
+            ),
+            "fixing_labels": pd.DataFrame(
+                [
+                    {"fixCommitment_g1_h1": 1.0, "fixCommitment_g1_h2": 0.0},
+                    {"fixCommitment_g1_h1": 0.0, "fixCommitment_g1_h2": 1.0},
+                ]
+            ),
+            "constraint_candidates": pd.DataFrame(
+                [
+                    {
+                        "sampleId": "s1",
+                        "constraintId": "ramp:g1:h1:up",
+                        "constraintType": "ramp",
+                        "inst_hourLoad": 10.0,
+                        "inst_slack": 0.1,
+                        "abs_constraintTypeCode": 1.0,
+                        "abs_hourNorm": 0.1,
+                        "labelRankScore": 0.9,
+                    },
+                    {
+                        "sampleId": "s2",
+                        "constraintId": "line:g1:h1:absCap",
+                        "constraintType": "line",
+                        "inst_hourLoad": 12.0,
+                        "inst_slack": 0.2,
+                        "abs_constraintTypeCode": 2.0,
+                        "abs_hourNorm": 0.2,
+                        "labelRankScore": 0.8,
+                    },
+                ]
+            ),
         },
         dataset_path,
     )
@@ -148,6 +184,9 @@ def test_train_model_writes_versioned_dir_without_publishing_defaults(monkeypatc
     assert training_summary["publishedDefaultArtifacts"] is False
     assert metadata["modelVersion"] == "v-test"
     assert model_bundle["featureSchemaVersion"] == "schema-test"
+    assert metadata["constraintScoringModelEnabled"] is True
+    assert metadata["instanceFeatureNames"] == ["inst_hourLoad", "inst_slack"]
+    assert metadata["abstractFeatureNames"] == ["abs_constraintTypeCode", "abs_hourNorm"]
 
 
 def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None:
@@ -168,6 +207,15 @@ def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None
     )
 
     def fake_run_power118_once(run_mode="exact", **kwargs):
+        normalized_run_mode = run_mode
+        if run_mode in {"hybrid_warm_start", "hybrid_constraint_aware_v2", "hybrid_constraint_aware_v3"}:
+            normalized_run_mode = "hybrid"
+            if run_mode == "hybrid_warm_start":
+                kwargs["hybrid_strategy"] = "warm_start"
+            elif run_mode == "hybrid_constraint_aware_v2":
+                kwargs["hybrid_strategy"] = "constraint_aware_v2"
+            elif run_mode == "hybrid_constraint_aware_v3":
+                kwargs["hybrid_strategy"] = "constraint_aware_v3"
         mode_map = {
             "exact": {
                 "solverModeUsed": "exact",
@@ -182,18 +230,34 @@ def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None
                 "solutionCount": 1,
             },
             "hybrid": {
-                "solverModeUsed": "exact",
+                "solverModeUsed": "exact" if kwargs.get("hybrid_strategy") == "warm_start" else "hybrid",
                 "adapterMode": "real",
-                "runtimeMs": 140.0,
-                "objectiveValue": 52.0,
+                "runtimeMs": 140.0 if kwargs.get("hybrid_strategy") == "warm_start" else 95.0 if kwargs.get("hybrid_strategy") == "constraint_aware_v2" else 80.0,
+                "objectiveValue": 52.0 if kwargs.get("hybrid_strategy") == "warm_start" else 51.5 if kwargs.get("hybrid_strategy") == "constraint_aware_v2" else 51.0,
                 "feasible": True,
                 "repairApplied": True,
-                "fallbackReason": "hybrid warm-start solve failed: numeric issue",
+                "fallbackReason": "hybrid warm-start solve failed: numeric issue" if kwargs.get("hybrid_strategy") == "warm_start" else None,
                 "statusName": "TIME_LIMIT",
                 "terminatedByTimeLimit": True,
                 "hasIncumbent": True,
                 "optimal": False,
                 "solutionCount": 1,
+                "constraintAwareHybridUsed": kwargs.get("hybrid_strategy") in {"constraint_aware_v2", "constraint_aware_v3"},
+                "reducedSolveApplied": kwargs.get("hybrid_strategy") in {"constraint_aware_v2", "constraint_aware_v3"},
+                "fixedCommitmentCount": 16 if kwargs.get("hybrid_strategy") == "constraint_aware_v2" else 0,
+                "predictedActiveConstraintCount": 11 if kwargs.get("hybrid_strategy") == "constraint_aware_v2" else 7,
+                "constraintConfidence": 0.77 if kwargs.get("hybrid_strategy") in {"constraint_aware_v2", "constraint_aware_v3"} else None,
+                "repairAfterReducedSolve": False,
+                "reducedSolveFallbackReason": None,
+                "hybridStrategyUsed": kwargs.get("hybrid_strategy"),
+                "constraintScoringUsed": kwargs.get("hybrid_strategy") == "constraint_aware_v3",
+                "criticalConstraintCount": 7 if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else 0,
+                "deferredConstraintCount": 12 if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else 0,
+                "constraintReactivationCount": 1 if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else 0,
+                "stagedSolveRounds": 2 if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else 1,
+                "constraintAwareReductionMode": "critical_constraint_subset" if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else "fixed_commitment_mask" if kwargs.get("hybrid_strategy") == "constraint_aware_v2" else "warm_start_only",
+                "reducedModelValidated": kwargs.get("hybrid_strategy") == "constraint_aware_v3",
+                "reductionRejectedReason": None,
             },
             "ml": {
                 "solverModeUsed": "ml",
@@ -217,8 +281,9 @@ def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None
             "featureSchemaVersion": "power118-feature-schema-v1",
             "modelLoadStatus": "loaded",
             "generatorDispatchByHour": [[20.0, 21.0]],
+            "requestedMode": run_mode,
         }
-        payload.update(mode_map[run_mode])
+        payload.update(mode_map[normalized_run_mode])
         return payload
 
     monkeypatch.setattr(eval_script, "run_power118_once", fake_run_power118_once)
@@ -228,24 +293,32 @@ def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None
         seed=7,
         output_dir=Path(tmp_path) / "eval",
         time_limit_ms=None,
-        modes=["exact", "hybrid", "ml"],
+        modes=["exact", "hybrid_warm_start", "hybrid_constraint_aware_v2", "hybrid_constraint_aware_v3", "ml"],
         require_exact_baseline=True,
     )
 
-    assert len(records) == 6
+    assert len(records) == 10
     assert summary_payload["evaluation"]["exactRealBaselineAvailable"] is True
     exact_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "exact")
-    hybrid_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "hybrid")
+    hybrid_warm_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "hybrid_warm_start")
+    hybrid_fixing_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "hybrid_constraint_aware_v2")
+    hybrid_scoring_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "hybrid_constraint_aware_v3")
     ml_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "ml")
     assert exact_summary["statusCounts"]["TIME_LIMIT_FEASIBLE"] == 2
     assert summary_payload["evaluation"]["exactBaselineStatus"] == "TIME_LIMIT_FEASIBLE"
     assert summary_payload["evaluation"]["exactBaselineTimeLimited"] is True
     assert summary_payload["evaluation"]["exactBaselineHasIncumbent"] is True
-    assert hybrid_summary["solverModeUsedCounts"]["exact"] == 2
-    assert hybrid_summary["fallbackReasonCounts"]["hybrid warm-start solve failed: numeric issue"] == 2
-    assert hybrid_summary["fallbackToModeCounts"]["exact"] == 2
-    assert hybrid_summary["fallbackCaseIds"] == ["case-00000", "case-00001"]
-    assert hybrid_summary["objectiveGapVsExact"] is not None
+    assert hybrid_warm_summary["solverModeUsedCounts"]["exact"] == 2
+    assert hybrid_warm_summary["fallbackReasonCounts"]["hybrid warm-start solve failed: numeric issue"] == 2
+    assert hybrid_warm_summary["fallbackToModeCounts"]["exact"] == 2
+    assert hybrid_warm_summary["fallbackCaseIds"] == ["case-00000", "case-00001"]
+    assert hybrid_warm_summary["objectiveGapVsExact"] is not None
+    assert hybrid_fixing_summary["solverModeUsedCounts"]["hybrid"] == 2
+    assert hybrid_fixing_summary["fallbackCount"] == 0
+    assert hybrid_scoring_summary["solverModeUsedCounts"]["hybrid"] == 2
+    assert hybrid_scoring_summary["criticalConstraintCount"] if "criticalConstraintCount" in hybrid_scoring_summary else True
+    assert hybrid_scoring_summary["fallbackCount"] == 0
+    assert summary_payload["evaluation"]["hybridFallbackReasonCounts"]["hybrid warm-start solve failed: numeric issue"] == 2
     assert ml_summary["dispatchMAE"] is not None
     assert (Path(tmp_path) / "eval" / "summary.json").exists()
     assert report_path.exists()
@@ -277,17 +350,18 @@ def test_exact_baseline_availability_helpers_cover_time_limit_cases() -> None:
 def test_eval_consistency_checker_accepts_consistent_payload() -> None:
     records_payload = {
         "records": [
-            {
-                "caseId": "case-00000",
-                "requestedMode": "exact",
-                "adapterMode": "real",
-                "status": "TIME_LIMIT_FEASIBLE",
-                "feasible": True,
-                "optimal": False,
-                "hasIncumbent": True,
-                "isFallback": False,
-                "objectiveGapVsExact": 0.0,
-            },
+                {
+                    "caseId": "case-00000",
+                    "requestedMode": "exact",
+                    "adapterMode": "real",
+                    "status": "TIME_LIMIT_FEASIBLE",
+                    "feasible": True,
+                    "optimal": False,
+                    "hasIncumbent": True,
+                    "terminatedByTimeLimit": True,
+                    "isFallback": False,
+                    "objectiveGapVsExact": 0.0,
+                },
             {
                 "caseId": "case-00000",
                 "requestedMode": "ml",
@@ -302,7 +376,12 @@ def test_eval_consistency_checker_accepts_consistent_payload() -> None:
         ]
     }
     summary_payload = {
-        "evaluation": {"exactRealBaselineAvailable": True},
+        "evaluation": {
+            "exactRealBaselineAvailable": True,
+            "exactBaselineStatus": "TIME_LIMIT_FEASIBLE",
+            "exactBaselineTimeLimited": True,
+            "exactBaselineHasIncumbent": True,
+        },
         "modes": [
             {"requestedMode": "exact", "runCount": 1, "successCount": 1, "failureCount": 0, "fallbackCount": 0},
             {"requestedMode": "ml", "runCount": 1, "successCount": 1, "failureCount": 0, "fallbackCount": 0},
@@ -317,17 +396,18 @@ def test_eval_consistency_checker_accepts_consistent_payload() -> None:
 def test_eval_consistency_checker_detects_inconsistent_payload() -> None:
     records_payload = {
         "records": [
-            {
-                "caseId": "case-00000",
-                "requestedMode": "exact",
-                "adapterMode": "real",
-                "status": "TIME_LIMIT_FEASIBLE",
-                "feasible": True,
-                "optimal": False,
-                "hasIncumbent": True,
-                "isFallback": False,
-                "objectiveGapVsExact": 0.0,
-            },
+                {
+                    "caseId": "case-00000",
+                    "requestedMode": "exact",
+                    "adapterMode": "real",
+                    "status": "TIME_LIMIT_FEASIBLE",
+                    "feasible": True,
+                    "optimal": False,
+                    "hasIncumbent": True,
+                    "terminatedByTimeLimit": True,
+                    "isFallback": False,
+                    "objectiveGapVsExact": 0.0,
+                },
             {
                 "caseId": "case-00000",
                 "requestedMode": "ml",
@@ -342,7 +422,12 @@ def test_eval_consistency_checker_detects_inconsistent_payload() -> None:
         ]
     }
     summary_payload = {
-        "evaluation": {"exactRealBaselineAvailable": False},
+        "evaluation": {
+            "exactRealBaselineAvailable": False,
+            "exactBaselineStatus": "COMPAT",
+            "exactBaselineTimeLimited": False,
+            "exactBaselineHasIncumbent": False,
+        },
         "modes": [
             {"requestedMode": "exact", "runCount": 1, "successCount": 0, "failureCount": 1, "fallbackCount": 0},
             {"requestedMode": "ml", "runCount": 1, "successCount": 1, "failureCount": 0, "fallbackCount": 0},

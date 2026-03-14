@@ -8,9 +8,14 @@ import joblib
 import numpy as np
 
 from backend_adapter.services.power118_dataset import build_power118_feature_record, build_power118_target_record
+from backend_adapter.services.power118_dataset import (
+    build_power118_constraint_label_record,
+    build_power118_fixing_label_record,
+)
 from backend_adapter.services.power118_ml_model import (
     build_power118_metadata,
     load_power118_model_artifacts,
+    predict_power118_constraints,
     predict_power118_schedule,
     write_power118_metadata_file,
     validate_power118_feature_schema,
@@ -98,6 +103,34 @@ def test_build_power118_target_record_flattens_commitment_and_dispatch() -> None
     assert target["dispatch_g2_h3"] == 23.0
 
 
+def test_build_power118_constraint_and_fixing_labels() -> None:
+    result = {
+        "unitCommitmentByHour": [[1.0, 1.0, 1.0], [0.0, 1.0, 1.0]],
+        "generatorDispatchByHour": [[20.0, 25.0, 30.0], [0.0, 25.0, 23.0]],
+        "constraintDiagnostics": {
+            "bindingConstraintCounts": {"generatorLimit": 2, "ramp": 1, "line": 1, "balance": 6, "total": 10},
+            "generatorLimitActiveIndices": ["genLimit:g1:h1:pMax"],
+            "rampActiveIndices": ["ramp:g1:h1:up"],
+            "lineActiveIndices": ["line:g1:h1:absCap"],
+            "balanceActiveIndices": ["balance:b1:h1"],
+            "topTightConstraints": {"generatorLimit": [{"constraintId": "genLimit:g1:h1:pMax", "slack": 0.0}]},
+            "constraintSlackSummary": {"generatorLimit": {"min": 0.0, "mean": 0.1, "max": 0.2}},
+        },
+        "activeGeneratorLimitCount": 2,
+        "activeRampConstraintCount": 1,
+        "activeLineConstraintCount": 1,
+        "activeBalanceConstraintCount": 6,
+    }
+
+    constraint_record = build_power118_constraint_label_record(result)
+    fixing_record = build_power118_fixing_label_record(result)
+
+    assert constraint_record["constraintLabelAvailable"] == 1.0
+    assert constraint_record["constraint_activeGeneratorLimitCount"] == 2.0
+    assert "genLimit:g1:h1:pMax" in constraint_record["constraint_generatorLimitActiveIndicesJson"]
+    assert "fixCommitment_g1_h2" in fixing_record
+
+
 def test_predict_power118_schedule_repairs_and_scores_prediction() -> None:
     power_data = _power_data()
     feature_record = build_power118_feature_record(power_data)
@@ -121,6 +154,32 @@ def test_predict_power118_schedule_repairs_and_scores_prediction() -> None:
     assert prediction["objective"] > 0.0
     assert prediction["modelVersion"] == metadata["modelVersion"]
     assert prediction["featureSchemaVersion"] == metadata["featureSchemaVersion"]
+
+
+def test_predict_power118_constraints_returns_fixing_and_summary_fields() -> None:
+    power_data = _power_data()
+    feature_record = build_power118_feature_record(power_data)
+    feature_columns = list(feature_record.keys())
+    metadata = build_power118_metadata(feature_columns, ["target-a"], train_sample_count=12)
+    metadata["constraintTargetNames"] = [f"fixCommitment_g{g}_h{h}" for g in range(1, 3) for h in range(1, 4)]
+    metadata["constraintSummaryTargetNames"] = [
+        "constraint_totalActiveConstraintCount",
+        "constraint_activeLineRatio",
+    ]
+    metadata["constraintPredictionMode"] = "fixing-mask"
+    model_bundle = {
+        "feature_columns": feature_columns,
+        "metrics": {"constraint_summary_train_r2": 0.7, "constraint_fixing_train_r2": 0.8},
+        "constraint_summary_model": _DummyModel([12.0, 0.2]),
+        "constraint_fixing_model": _DummyModel([0.9, 0.1, 0.8, 0.2, 0.9, 0.3]),
+    }
+
+    prediction = predict_power118_constraints(power_data, model_bundle, metadata=metadata)
+
+    assert prediction["constraintModelEnabled"] is True
+    assert prediction["predictedActiveConstraintCount"] == 12
+    assert prediction["constraintConfidence"] > 0.0
+    assert len(prediction["predictedFixedCommitmentMaskScores"]) == 2
 
 
 def test_validate_power118_feature_schema_reports_mismatch() -> None:

@@ -136,3 +136,12 @@ def test_power118_accepts_run_mode_options(monkeypatch, tmp_path) -> None:
     assert isinstance(run, dict)
     _assert_run_contract(run, "power-118")
     assert run.get("solverModeUsed") in {"", "exact", "hybrid", "ml"}
+
+    v3_response = client.post(
+        "/api/runs",
+        json={"scenarioId": "power-118", "runMode": "hybrid_constraint_aware_v3", "fallbackToExact": True},
+    )
+    assert v3_response.status_code == 200
+    v3_run = v3_response.json().get("run")
+    assert isinstance(v3_run, dict)
+    _assert_run_contract(v3_run, "power-118")

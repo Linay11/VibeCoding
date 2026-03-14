@@ -218,6 +218,8 @@ For Linux or AutoDL execution, see [docs/POWER118_REMOTE_RUNBOOK.md](docs/POWER1
 ./scripts/run_power118_remote_pipeline.sh
 ```
 
+For the current constraint-aware generations and the paper-aligned roadmap, see [docs/POWER118_CONSTRAINT_AWARE.md](docs/POWER118_CONSTRAINT_AWARE.md).
+
 ## Tests
 
 Frontend checks:

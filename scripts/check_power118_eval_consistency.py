@@ -33,6 +33,14 @@ def check_eval_consistency(records_payload: dict[str, Any], summary_payload: dic
         issues.append(
             "exact baseline availability mismatch between summary and records"
         )
+    if exact_records:
+        expected_status = exact_records[0].get("status")
+        if summary.get("evaluation", {}).get("exactBaselineStatus") != expected_status:
+            issues.append("exact baseline status mismatch between summary and first exact record")
+        if bool(summary.get("evaluation", {}).get("exactBaselineTimeLimited")) != bool(exact_records[0].get("terminatedByTimeLimit")):
+            issues.append("exact baseline time-limit flag mismatch between summary and first exact record")
+        if bool(summary.get("evaluation", {}).get("exactBaselineHasIncumbent")) != bool(exact_records[0].get("hasIncumbent")):
+            issues.append("exact baseline incumbent flag mismatch between summary and first exact record")
 
     for mode_name, row in mode_map.items():
         group = [record for record in records if record.get("requestedMode") == mode_name]
@@ -47,9 +55,14 @@ def check_eval_consistency(records_payload: dict[str, Any], summary_payload: dic
             issues.append(f"failureCount mismatch for mode={mode_name}")
         if int(row.get("fallbackCount", 0)) != fallback_count:
             issues.append(f"fallbackCount mismatch for mode={mode_name}")
+        if str(mode_name).startswith("hybrid_"):
+            if "fallbackReasonCounts" not in row:
+                issues.append(f"fallbackReasonCounts missing for mode={mode_name}")
+            if "fallbackToModeCounts" not in row:
+                issues.append(f"fallbackToModeCounts missing for mode={mode_name}")
 
     if bool(evaluation.get("exactRealBaselineAvailable")):
-        non_exact_records = [row for row in records if row.get("requestedMode") in {"hybrid", "ml"}]
+        non_exact_records = [row for row in records if row.get("requestedMode") != "exact"]
         if non_exact_records and all(row.get("objectiveGapVsExact") is None for row in non_exact_records):
             issues.append("exact baseline is available but all objectiveGapVsExact values are null")
 

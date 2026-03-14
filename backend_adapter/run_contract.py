@@ -124,8 +124,13 @@ def normalize_run_payload(payload: Any, scenario_id: str) -> Dict[str, Any]:
 
     normalized_scenario_id = str(raw.get("scenarioId") or scenario_id)
     requested_run_mode = raw.get("requestedRunMode")
+    requested_mode = raw.get("requestedMode")
+    if requested_mode is not None:
+        requested_mode = str(requested_mode).strip().lower() or None
     if requested_run_mode is not None:
         requested_run_mode = str(requested_run_mode).strip().lower() or None
+    if requested_run_mode is None:
+        requested_run_mode = requested_mode
     generated_at = raw.get("generatedAt")
     if not isinstance(generated_at, str) or not generated_at.strip():
         generated_at = _utc_now_iso()
@@ -218,10 +223,87 @@ def normalize_run_payload(payload: Any, scenario_id: str) -> Dict[str, Any]:
     if has_incumbent is not None:
         has_incumbent = bool(has_incumbent)
 
+    hybrid_strategy_requested = raw.get("hybridStrategyRequested")
+    if hybrid_strategy_requested is not None:
+        hybrid_strategy_requested = str(hybrid_strategy_requested).strip() or None
+
+    hybrid_strategy_used = raw.get("hybridStrategyUsed")
+    if hybrid_strategy_used is not None:
+        hybrid_strategy_used = str(hybrid_strategy_used).strip() or None
+
+    constraint_aware_hybrid_used = raw.get("constraintAwareHybridUsed")
+    if constraint_aware_hybrid_used is not None:
+        constraint_aware_hybrid_used = bool(constraint_aware_hybrid_used)
+
+    reduced_solve_applied = raw.get("reducedSolveApplied")
+    if reduced_solve_applied is not None:
+        reduced_solve_applied = bool(reduced_solve_applied)
+
+    fixed_commitment_count = raw.get("fixedCommitmentCount")
+    if fixed_commitment_count is not None:
+        fixed_commitment_count = max(0, _to_int(fixed_commitment_count, default=0))
+
+    predicted_active_constraint_count = raw.get("predictedActiveConstraintCount")
+    if predicted_active_constraint_count is not None:
+        predicted_active_constraint_count = max(0, _to_int(predicted_active_constraint_count, default=0))
+
+    constraint_confidence = raw.get("constraintConfidence")
+    if constraint_confidence is not None:
+        constraint_confidence = _to_float(constraint_confidence, default=0.0)
+
+    repair_after_reduced_solve = raw.get("repairAfterReducedSolve")
+    if repair_after_reduced_solve is not None:
+        repair_after_reduced_solve = bool(repair_after_reduced_solve)
+
+    reduced_solve_fallback_reason = raw.get("reducedSolveFallbackReason")
+    if reduced_solve_fallback_reason is not None:
+        reduced_solve_fallback_reason = str(reduced_solve_fallback_reason).strip() or None
+
+    fixed_binary_ratio = raw.get("fixedBinaryRatio")
+    if fixed_binary_ratio is not None:
+        fixed_binary_ratio = _to_float(fixed_binary_ratio, default=0.0)
+
+    constraint_reduction_ratio = raw.get("constraintReductionRatio")
+    if constraint_reduction_ratio is not None:
+        constraint_reduction_ratio = _to_float(constraint_reduction_ratio, default=0.0)
+
+    constraint_scoring_used = raw.get("constraintScoringUsed")
+    if constraint_scoring_used is not None:
+        constraint_scoring_used = bool(constraint_scoring_used)
+
+    critical_constraint_count = raw.get("criticalConstraintCount")
+    if critical_constraint_count is not None:
+        critical_constraint_count = max(0, _to_int(critical_constraint_count, default=0))
+
+    deferred_constraint_count = raw.get("deferredConstraintCount")
+    if deferred_constraint_count is not None:
+        deferred_constraint_count = max(0, _to_int(deferred_constraint_count, default=0))
+
+    constraint_reactivation_count = raw.get("constraintReactivationCount")
+    if constraint_reactivation_count is not None:
+        constraint_reactivation_count = max(0, _to_int(constraint_reactivation_count, default=0))
+
+    staged_solve_rounds = raw.get("stagedSolveRounds")
+    if staged_solve_rounds is not None:
+        staged_solve_rounds = max(0, _to_int(staged_solve_rounds, default=0))
+
+    constraint_aware_reduction_mode = raw.get("constraintAwareReductionMode")
+    if constraint_aware_reduction_mode is not None:
+        constraint_aware_reduction_mode = str(constraint_aware_reduction_mode).strip() or None
+
+    reduced_model_validated = raw.get("reducedModelValidated")
+    if reduced_model_validated is not None:
+        reduced_model_validated = bool(reduced_model_validated)
+
+    reduction_rejected_reason = raw.get("reductionRejectedReason")
+    if reduction_rejected_reason is not None:
+        reduction_rejected_reason = str(reduction_rejected_reason).strip() or None
+
     return {
         "runId": run_id,
         "scenarioId": normalized_scenario_id,
         "generatedAt": generated_at,
+        "requestedMode": requested_run_mode,
         "requestedRunMode": requested_run_mode,
         "metrics": metrics,
         "strategies": strategies,
@@ -246,4 +328,23 @@ def normalize_run_payload(payload: Any, scenario_id: str) -> Dict[str, Any]:
         "terminatedByTimeLimit": terminated_by_time_limit,
         "optimal": optimal,
         "hasIncumbent": has_incumbent,
+        "hybridStrategyRequested": hybrid_strategy_requested,
+        "hybridStrategyUsed": hybrid_strategy_used,
+        "constraintAwareHybridUsed": constraint_aware_hybrid_used,
+        "reducedSolveApplied": reduced_solve_applied,
+        "fixedCommitmentCount": fixed_commitment_count,
+        "predictedActiveConstraintCount": predicted_active_constraint_count,
+        "constraintConfidence": constraint_confidence,
+        "repairAfterReducedSolve": repair_after_reduced_solve,
+        "reducedSolveFallbackReason": reduced_solve_fallback_reason,
+        "fixedBinaryRatio": fixed_binary_ratio,
+        "constraintReductionRatio": constraint_reduction_ratio,
+        "constraintScoringUsed": constraint_scoring_used,
+        "criticalConstraintCount": critical_constraint_count,
+        "deferredConstraintCount": deferred_constraint_count,
+        "constraintReactivationCount": constraint_reactivation_count,
+        "stagedSolveRounds": staged_solve_rounds,
+        "constraintAwareReductionMode": constraint_aware_reduction_mode,
+        "reducedModelValidated": reduced_model_validated,
+        "reductionRejectedReason": reduction_rejected_reason,
     }

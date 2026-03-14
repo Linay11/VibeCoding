@@ -293,11 +293,13 @@ def _power118_run(
     run_mode: str = "exact",
     time_limit_ms: int | None = None,
     fallback_to_exact: bool = True,
+    hybrid_strategy: str = "warm_start",
 ) -> Dict[str, Any]:
     return run_power118_once(
         run_mode=run_mode,
         time_limit_ms=time_limit_ms,
         fallback_to_exact=fallback_to_exact,
+        hybrid_strategy=hybrid_strategy,
     )
 
 
@@ -313,6 +315,7 @@ def run_scenario_once(
     run_mode: str = "exact",
     time_limit_ms: int | None = None,
     fallback_to_exact: bool = True,
+    hybrid_strategy: str = "warm_start",
 ) -> Dict[str, Any]:
     if scenario_id == "portfolio":
         return _safe_runner(_portfolio_real_run, "portfolio")
@@ -326,6 +329,7 @@ def run_scenario_once(
                 run_mode=run_mode,
                 time_limit_ms=time_limit_ms,
                 fallback_to_exact=fallback_to_exact,
+                hybrid_strategy=hybrid_strategy,
             ),
             "power-118",
         )

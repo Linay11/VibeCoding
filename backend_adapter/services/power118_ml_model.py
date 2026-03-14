@@ -9,13 +9,17 @@ from typing import Any
 import joblib
 import numpy as np
 
-from backend_adapter.services.power118_dataset import build_power118_feature_frame
+from backend_adapter.services.power118_dataset import (
+    build_power118_constraint_candidate_frame,
+    build_power118_feature_frame,
+)
 
 
 DEFAULT_MODEL_FILE = Path(__file__).resolve().parents[1] / "data" / "power118_ml_model.joblib"
 DEFAULT_METADATA_FILE = Path(__file__).resolve().parents[1] / "data" / "power118_ml_metadata.json"
 DEFAULT_MODEL_VERSION = "power118-baseline-v1"
 DEFAULT_FEATURE_SCHEMA_VERSION = "power118-feature-schema-v1"
+CONSTRAINT_LABEL_SCHEMA_VERSION = "power118-constraint-label-v1"
 MODEL_PATH_ENV = "POWER118_ML_MODEL_PATH"
 METADATA_PATH_ENV = "POWER118_ML_METADATA_PATH"
 
@@ -197,6 +201,14 @@ def _estimate_confidence(model_bundle: dict[str, Any]) -> float:
     return float(min(max(confidence, 0.05), 0.99))
 
 
+def _estimate_constraint_confidence(model_bundle: dict[str, Any]) -> float:
+    metrics = model_bundle.get("metrics", {})
+    summary_score = max(0.0, float(metrics.get("constraint_summary_train_r2", 0.0)))
+    fixing_score = max(0.0, float(metrics.get("constraint_fixing_train_r2", 0.0)))
+    confidence = 0.35 + 0.30 * min(summary_score, 1.0) + 0.35 * min(fixing_score, 1.0)
+    return float(min(max(confidence, 0.05), 0.99))
+
+
 def _repair_hourly_schedule(
     generators: list[dict[str, Any]],
     total_load_by_hour: list[float],
@@ -340,6 +352,11 @@ def predict_power118_schedule(
     num_generators = len(generators)
 
     unit_commitment = _reshape_prediction(raw_commitment, num_generators, horizon)
+    commitment_scores = _reshape_prediction(raw_commitment, num_generators, horizon)
+    commitment_confidence = [
+        [float(min(max(abs(score - 0.5) * 2.0, 0.0), 1.0)) for score in row]
+        for row in commitment_scores
+    ]
     dispatch = _reshape_prediction(raw_dispatch, num_generators, horizon)
     unit_commitment, dispatch, repair_applied, feasible = _repair_hourly_schedule(
         generators=generators,
@@ -364,10 +381,147 @@ def predict_power118_schedule(
         "repairApplied": repair_applied,
         "generatorDispatchByHour": dispatch,
         "unitCommitmentByHour": unit_commitment,
+        "commitmentScores": commitment_scores,
+        "commitmentConfidence": commitment_confidence,
         "topGenerators": sorted(total_dispatch_by_generator, key=lambda item: item["value"], reverse=True)[:4],
         "totalLoadByHour": list(power_data.get("totalLoadByHour", [])),
         "summary": dict(power_data.get("summary", {})),
         "generatorCapacityPreview": list(power_data.get("generatorCapacityPreview", [])),
         "modelVersion": metadata.get("modelVersion"),
         "featureSchemaVersion": metadata.get("featureSchemaVersion"),
+    }
+
+
+def predict_power118_constraints(
+    power_data: dict[str, Any],
+    model_bundle: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = metadata or _synthesized_metadata(model_bundle)
+    feature_array, schema_error = validate_power118_feature_schema(
+        power_data=power_data,
+        expected_feature_names=list(metadata.get("featureNames", [])),
+    )
+    if schema_error:
+        raise ValueError(schema_error)
+
+    generators = list(power_data.get("generators", []))
+    horizon = int(power_data.get("timeHorizon", 24))
+    num_generators = len(generators)
+
+    predicted_constraint_scores: dict[str, float] = {}
+    predicted_active_constraint_count = 0.0
+
+    constraint_summary_model = model_bundle.get("constraint_summary_model")
+    constraint_summary_columns = list(metadata.get("constraintSummaryTargetNames", []) or model_bundle.get("constraint_summary_columns", []))
+    if constraint_summary_model is not None and constraint_summary_columns:
+        raw_summary = np.asarray(constraint_summary_model.predict(feature_array)[0], dtype=float)
+        for column_name, value in zip(constraint_summary_columns, raw_summary.tolist()):
+            predicted_constraint_scores[column_name] = float(max(value, 0.0))
+        predicted_active_constraint_count = float(max(predicted_constraint_scores.get("constraint_totalActiveConstraintCount", 0.0), 0.0))
+
+    constraint_fixing_model = model_bundle.get("constraint_fixing_model")
+    constraint_fixing_columns = list(metadata.get("constraintTargetNames", []) or model_bundle.get("constraint_fixing_columns", []))
+    fixing_mask_scores = [[0.0 for _ in range(horizon)] for _ in range(num_generators)]
+    if constraint_fixing_model is not None and constraint_fixing_columns:
+        raw_fixing = np.asarray(constraint_fixing_model.predict(feature_array)[0], dtype=float)
+        fixing_mask_matrix = _reshape_prediction(raw_fixing, num_generators, horizon)
+        fixing_mask_scores = [
+            [float(min(max(score, 0.0), 1.0)) for score in row]
+            for row in fixing_mask_matrix
+        ]
+
+    predicted_fixed_commitments = []
+    for gen_index in range(num_generators):
+        for hour_index in range(horizon):
+            score = fixing_mask_scores[gen_index][hour_index]
+            if score >= 0.5:
+                predicted_fixed_commitments.append(
+                    {
+                        "generatorIndex": gen_index,
+                        "hourIndex": hour_index,
+                        "score": score,
+                    }
+                )
+
+    return {
+        "predictedActiveConstraints": predicted_constraint_scores,
+        "predictedConstraintScores": predicted_constraint_scores,
+        "predictedActiveConstraintCount": int(round(predicted_active_constraint_count)),
+        "predictedFixedCommitmentMaskScores": fixing_mask_scores,
+        "predictedFixedCommitments": predicted_fixed_commitments,
+        "constraintConfidence": _estimate_constraint_confidence(model_bundle),
+        "constraintModelEnabled": bool(constraint_summary_model is not None or constraint_fixing_model is not None),
+        "constraintPredictionMode": str(metadata.get("constraintPredictionMode") or "fixing-mask"),
+        "constraintLabelSchemaVersion": metadata.get("constraintLabelSchemaVersion", CONSTRAINT_LABEL_SCHEMA_VERSION),
+        "constraintTargetNames": list(metadata.get("constraintTargetNames", [])),
+    }
+
+
+def predict_power118_constraint_scores(
+    power_data: dict[str, Any],
+    schedule_prediction: dict[str, Any],
+    model_bundle: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = metadata or _synthesized_metadata(model_bundle)
+    candidate_frame = build_power118_constraint_candidate_frame(
+        power_data=power_data,
+        schedule_prediction=schedule_prediction,
+        sample_id="inference",
+    )
+    if candidate_frame.empty:
+        return {
+            "constraintScores": {},
+            "predictedCriticalConstraints": [],
+            "predictedReducibleConstraints": [],
+            "constraintConfidence": 0.0,
+            "topKConstraintIds": [],
+            "criticalConstraintCount": 0,
+            "deferredConstraintCount": 0,
+            "constraintCandidates": [],
+        }
+
+    instance_feature_names = list(metadata.get("instanceFeatureNames", []) or model_bundle.get("instance_feature_names", []))
+    abstract_feature_names = list(metadata.get("abstractFeatureNames", []) or model_bundle.get("abstract_feature_names", []))
+    feature_names = instance_feature_names + abstract_feature_names
+    if not feature_names:
+        raise ValueError("constraint scoring model is missing instance/abstract feature names")
+    if not set(feature_names).issubset(set(candidate_frame.columns)):
+        missing = sorted(set(feature_names).difference(set(candidate_frame.columns)))
+        raise ValueError(f"constraint candidate frame is missing features: {missing[:5]}")
+
+    scoring_model = model_bundle.get("constraint_scoring_model")
+    if scoring_model is None:
+        raise ValueError("constraint scoring model is unavailable")
+
+    X_constraint = candidate_frame[feature_names].to_numpy(dtype=float)
+    predicted_scores = np.asarray(scoring_model.predict(X_constraint), dtype=float)
+    candidate_frame = candidate_frame.copy()
+    candidate_frame["predictedScore"] = predicted_scores
+    candidate_frame["scoreRank"] = candidate_frame["predictedScore"].rank(method="first", ascending=False)
+
+    reducible_frame = candidate_frame.loc[candidate_frame["canBeReduced"] >= 0.5].copy()
+    reducible_frame = reducible_frame.sort_values("predictedScore", ascending=False)
+    top_k = max(1, min(25, int(round(len(reducible_frame) * 0.15)))) if not reducible_frame.empty else 0
+    critical_frame = reducible_frame.head(top_k).copy()
+    deferred_frame = reducible_frame.iloc[top_k:].copy()
+
+    return {
+        "constraintScores": {
+            str(row["constraintId"]): float(row["predictedScore"])
+            for _, row in candidate_frame.iterrows()
+        },
+        "predictedCriticalConstraints": critical_frame.to_dict(orient="records"),
+        "predictedReducibleConstraints": deferred_frame.to_dict(orient="records"),
+        "constraintConfidence": _estimate_constraint_confidence(model_bundle),
+        "topKConstraintIds": [str(value) for value in critical_frame["constraintId"].tolist()],
+        "criticalConstraintCount": int(len(critical_frame)),
+        "deferredConstraintCount": int(len(deferred_frame)),
+        "constraintCandidates": candidate_frame.to_dict(orient="records"),
+        "instanceFeatureNames": instance_feature_names,
+        "abstractFeatureNames": abstract_feature_names,
+        "constraintRepresentationVersion": metadata.get("constraintRepresentationVersion", "power118-constraint-repr-v3"),
+        "constraintScoringModelEnabled": bool(metadata.get("constraintScoringModelEnabled", scoring_model is not None)),
+        "constraintScoringMode": metadata.get("constraintScoringMode", "ranking-regression"),
     }

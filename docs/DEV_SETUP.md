@@ -118,6 +118,27 @@ Default evaluation outputs:
 - `backend_adapter/data/power118_eval/summary.json`
 - `backend_adapter/data/power118_eval/report.md`
 
+To compare warm-start and constraint-aware variants in the current v3 setup:
+
+```bash
+cd /path/to/VibeCoding
+python scripts/eval_power118_modes.py \
+  --num-cases 1 \
+  --seed 7 \
+  --output-dir backend_adapter/data/power118_eval_constraint_v3 \
+  --time-limit-ms 20000 \
+  --require-exact-baseline
+```
+
+Then validate aggregation consistency:
+
+```bash
+cd /path/to/VibeCoding
+python scripts/check_power118_eval_consistency.py \
+  --records-path backend_adapter/data/power118_eval_constraint_v3/power118_eval_records.json \
+  --summary-path backend_adapter/data/power118_eval_constraint_v3/summary.json
+```
+
 Important interpretation note:
 - if `Exact real baseline available: NO`, the local or current backend environment did not complete a real feasible exact SCUC baseline
 - in that case the script still records fallback and compat behavior honestly, but objective-gap conclusions should be treated as unavailable

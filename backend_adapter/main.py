@@ -85,7 +85,10 @@ def _build_app() -> FastAPI:
         if get_scenario(scenario_id) is None:
             raise APIError(400, "INVALID_ARGUMENT", f"unknown scenarioId: {scenario_id}")
 
-        if run_mode not in {"exact", "hybrid", "ml"}:
+        if run_mode == "hybrid":
+            run_mode = "hybrid_warm_start"
+
+        if run_mode not in {"exact", "hybrid_warm_start", "hybrid_constraint_aware_v2", "hybrid_constraint_aware_v3", "ml"}:
             raise APIError(400, "INVALID_ARGUMENT", f"unsupported runMode: {run_mode}")
 
         run_payload = run_scenario_once(
@@ -93,6 +96,7 @@ def _build_app() -> FastAPI:
             run_mode=run_mode,
             time_limit_ms=req.timeLimitMs,
             fallback_to_exact=req.fallbackToExact,
+            hybrid_strategy=(req.hybridStrategy or "warm_start"),
         )
         if not isinstance(run_payload, dict):
             raise APIError(500, "RUN_FAILED", "runner did not return a valid payload")

@@ -16,6 +16,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from backend_adapter.services.power118_ml_model import (
+    CONSTRAINT_LABEL_SCHEMA_VERSION,
     DEFAULT_FEATURE_SCHEMA_VERSION,
     DEFAULT_METADATA_FILE,
     DEFAULT_MODEL_FILE,
@@ -63,6 +64,9 @@ def train_model(
     dataset_bundle = pd.read_pickle(dataset_path)
     features = dataset_bundle["features"]
     targets = dataset_bundle["targets"]
+    constraint_labels = dataset_bundle.get("constraint_labels")
+    constraint_candidates = dataset_bundle.get("constraint_candidates")
+    fixing_labels = dataset_bundle.get("fixing_labels")
 
     commitment_columns = [column for column in targets.columns if column.startswith("unitCommitment_")]
     dispatch_columns = [column for column in targets.columns if column.startswith("dispatch_")]
@@ -96,6 +100,80 @@ def train_model(
     dispatch_mae = float(abs(dispatch_pred - y_dispatch).mean())
     dispatch_mean = float(abs(y_dispatch).mean() or 1.0)
 
+    constraint_summary_model = None
+    constraint_fixing_model = None
+    constraint_scoring_model = None
+    constraint_summary_columns: list[str] = []
+    constraint_fixing_columns: list[str] = []
+    instance_feature_names: list[str] = []
+    abstract_feature_names: list[str] = []
+    constraint_metrics: dict[str, float] = {}
+
+    if isinstance(constraint_labels, pd.DataFrame) and not constraint_labels.empty:
+        constraint_summary_columns = [
+            column
+            for column in constraint_labels.columns
+            if column.startswith("constraint_") and not column.endswith("Json")
+        ]
+        if constraint_summary_columns:
+            y_constraint_summary = constraint_labels[constraint_summary_columns].to_numpy(dtype=float)
+            constraint_summary_model = ExtraTreesRegressor(
+                n_estimators=n_estimators,
+                random_state=random_state + 2,
+                n_jobs=-1,
+            )
+            constraint_summary_model.fit(X, y_constraint_summary)
+            constraint_summary_pred = constraint_summary_model.predict(X)
+            constraint_metrics["constraint_summary_train_r2"] = float(
+                constraint_summary_model.score(X, y_constraint_summary)
+            )
+            constraint_metrics["constraint_summary_train_mae"] = float(
+                abs(constraint_summary_pred - y_constraint_summary).mean()
+            )
+
+    if isinstance(fixing_labels, pd.DataFrame) and not fixing_labels.empty:
+        constraint_fixing_columns = [
+            column
+            for column in fixing_labels.columns
+            if column.startswith("fixCommitment_")
+        ]
+        if constraint_fixing_columns:
+            y_constraint_fixing = fixing_labels[constraint_fixing_columns].to_numpy(dtype=float)
+            constraint_fixing_model = ExtraTreesRegressor(
+                n_estimators=n_estimators,
+                random_state=random_state + 3,
+                n_jobs=-1,
+            )
+            constraint_fixing_model.fit(X, y_constraint_fixing)
+            constraint_fixing_pred = constraint_fixing_model.predict(X)
+            constraint_metrics["constraint_fixing_train_r2"] = float(
+                constraint_fixing_model.score(X, y_constraint_fixing)
+            )
+            constraint_metrics["constraint_fixing_train_mae"] = float(
+                abs(constraint_fixing_pred - y_constraint_fixing).mean()
+            )
+
+    if isinstance(constraint_candidates, pd.DataFrame) and not constraint_candidates.empty:
+        instance_feature_names = [column for column in constraint_candidates.columns if column.startswith("inst_")]
+        abstract_feature_names = [column for column in constraint_candidates.columns if column.startswith("abs_")]
+        constraint_feature_names = instance_feature_names + abstract_feature_names
+        if constraint_feature_names:
+            X_constraint = constraint_candidates[constraint_feature_names].to_numpy(dtype=float)
+            y_constraint_score = constraint_candidates["labelRankScore"].to_numpy(dtype=float)
+            constraint_scoring_model = ExtraTreesRegressor(
+                n_estimators=n_estimators,
+                random_state=random_state + 4,
+                n_jobs=-1,
+            )
+            constraint_scoring_model.fit(X_constraint, y_constraint_score)
+            constraint_score_pred = constraint_scoring_model.predict(X_constraint)
+            constraint_metrics["constraint_scoring_train_r2"] = float(
+                constraint_scoring_model.score(X_constraint, y_constraint_score)
+            )
+            constraint_metrics["constraint_scoring_train_mae"] = float(
+                abs(constraint_score_pred - y_constraint_score).mean()
+            )
+
     metadata = build_power118_metadata(
         feature_names=list(features.columns),
         target_names=target_names,
@@ -103,18 +181,36 @@ def train_model(
         model_version=model_version,
         feature_schema_version=feature_schema_version,
     )
+    metadata["constraintModelEnabled"] = bool(constraint_summary_model is not None or constraint_fixing_model is not None)
+    metadata["constraintLabelSchemaVersion"] = CONSTRAINT_LABEL_SCHEMA_VERSION
+    metadata["constraintTargetNames"] = constraint_fixing_columns
+    metadata["constraintSummaryTargetNames"] = constraint_summary_columns
+    metadata["constraintPredictionMode"] = "fixing-mask"
+    metadata["constraintRepresentationVersion"] = "power118-constraint-repr-v3"
+    metadata["constraintScoringModelEnabled"] = bool(constraint_scoring_model is not None)
+    metadata["constraintScoringMode"] = "ranking-regression"
+    metadata["instanceFeatureNames"] = instance_feature_names
+    metadata["abstractFeatureNames"] = abstract_feature_names
     model_bundle = {
         "feature_columns": list(features.columns),
         "commitment_columns": commitment_columns,
         "dispatch_columns": dispatch_columns,
         "commitment_model": commitment_model,
         "dispatch_model": dispatch_model,
+        "constraint_summary_model": constraint_summary_model,
+        "constraint_fixing_model": constraint_fixing_model,
+        "constraint_scoring_model": constraint_scoring_model,
+        "constraint_summary_columns": constraint_summary_columns,
+        "constraint_fixing_columns": constraint_fixing_columns,
+        "instance_feature_names": instance_feature_names,
+        "abstract_feature_names": abstract_feature_names,
         "metrics": {
             "commitment_train_r2": float(commitment_model.score(X, y_commitment)),
             "dispatch_train_r2": float(dispatch_model.score(X, y_dispatch)),
             "commitment_train_mae": commitment_mae,
             "dispatch_train_mae": dispatch_mae,
             "dispatch_train_mae_ratio": float(dispatch_mae / dispatch_mean),
+            **constraint_metrics,
         },
         "dataset_path": str(dataset_path),
         "metadata": metadata,

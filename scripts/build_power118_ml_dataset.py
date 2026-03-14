@@ -14,7 +14,10 @@ if str(ROOT_DIR) not in sys.path:
 
 from backend_adapter.services.power118_data_augment import generate_power118_override_set
 from backend_adapter.services.power118_dataset import (
+    build_power118_constraint_label_record,
+    build_power118_constraint_candidate_records,
     build_power118_feature_record,
+    build_power118_fixing_label_record,
     build_power118_metadata_record,
     build_power118_target_record,
     load_power118_data,
@@ -60,10 +63,14 @@ def build_dataset(
 
     feature_rows: list[dict] = []
     target_rows: list[dict] = []
+    constraint_label_rows: list[dict] = []
+    constraint_candidate_rows: list[dict] = []
+    fixing_label_rows: list[dict] = []
     metadata_rows: list[dict] = []
     dropped_infeasible_count = 0
     dropped_no_incumbent_count = 0
     dropped_by_status: dict[str, int] = {}
+    constraint_label_missing_count = 0
 
     for sample_index, overrides in enumerate(overrides_list, start=1):
         power_data = load_power118_data(data_path=data_path, overrides=overrides)
@@ -85,18 +92,35 @@ def build_dataset(
         sample_id = f"power118-{sample_index:05d}"
         feature_rows.append(build_power118_feature_record(power_data))
         target_rows.append(build_power118_target_record(result))
+        constraint_record = build_power118_constraint_label_record(result)
+        fixing_record = build_power118_fixing_label_record(result)
+        constraint_candidate_rows.extend(
+            build_power118_constraint_candidate_records(
+                power_data=power_data,
+                result=result,
+                sample_id=sample_id,
+            )
+        )
+        constraint_label_rows.append(constraint_record)
+        fixing_label_rows.append(fixing_record)
+        if not constraint_record.get("constraintLabelAvailable"):
+            constraint_label_missing_count += 1
         metadata_rows.append(
             build_power118_metadata_record(
                 power_data=power_data,
                 overrides=overrides,
                 sample_id=sample_id,
                 split="train",
+                result=result,
             )
         )
 
     dataset_bundle = {
         "features": pd.DataFrame(feature_rows),
         "targets": pd.DataFrame(target_rows),
+        "constraint_labels": pd.DataFrame(constraint_label_rows),
+        "constraint_candidates": pd.DataFrame(constraint_candidate_rows),
+        "fixing_labels": pd.DataFrame(fixing_label_rows),
         "metadata": pd.DataFrame(metadata_rows),
     }
 
@@ -104,6 +128,8 @@ def build_dataset(
     dataset_path = output_dir / dataset_filename
     pd.to_pickle(dataset_bundle, dataset_path)
 
+    constraint_frame = pd.DataFrame(constraint_label_rows) if constraint_label_rows else pd.DataFrame()
+    candidate_frame = pd.DataFrame(constraint_candidate_rows) if constraint_candidate_rows else pd.DataFrame()
     dataset_summary = {
         "datasetPath": str(dataset_path),
         "summaryPath": str(output_dir / DEFAULT_SUMMARY_FILENAME),
@@ -114,11 +140,41 @@ def build_dataset(
         "droppedInfeasibleCount": int(dropped_infeasible_count),
         "droppedNoIncumbentCount": int(dropped_no_incumbent_count),
         "droppedByStatus": dropped_by_status,
+        "constraintLabelMissingCount": int(constraint_label_missing_count),
+        "constraintLabelGenerated": bool(len(constraint_label_rows) == len(feature_rows) and len(feature_rows) > 0),
         "timeLimitS": float(time_limit_s) if time_limit_s is not None else None,
         "exactBaselineUsed": bool(runtime.get("available")),
         "runtimeStage": runtime.get("stage"),
         "runtimeReason": runtime.get("reason"),
     }
+    if not constraint_frame.empty:
+        dataset_summary["avgActiveConstraintCount"] = float(
+            pd.to_numeric(constraint_frame["constraint_totalActiveConstraintCount"], errors="coerce").mean()
+        )
+        dataset_summary["avgActiveGeneratorLimitRatio"] = float(
+            pd.to_numeric(constraint_frame["constraint_activeGeneratorLimitRatio"], errors="coerce").mean()
+        )
+        dataset_summary["avgActiveRampRatio"] = float(
+            pd.to_numeric(constraint_frame["constraint_activeRampRatio"], errors="coerce").mean()
+        )
+        dataset_summary["avgActiveLineRatio"] = float(
+            pd.to_numeric(constraint_frame["constraint_activeLineRatio"], errors="coerce").mean()
+        )
+    if not candidate_frame.empty:
+        dataset_summary["constraintCandidateCount"] = int(len(candidate_frame))
+        dataset_summary["constraintCandidateTypeCounts"] = {
+            str(key): int(value)
+            for key, value in candidate_frame["constraintType"].value_counts(dropna=False).to_dict().items()
+        }
+        dataset_summary["constraintCandidateActiveRatio"] = float(
+            pd.to_numeric(candidate_frame["labelActive"], errors="coerce").mean()
+        )
+        dataset_summary["constraintCandidateTightRatio"] = float(
+            pd.to_numeric(candidate_frame["labelTight"], errors="coerce").mean()
+        )
+        dataset_summary["constraintCandidateTopRankCoverage"] = float(
+            pd.to_numeric(candidate_frame["labelRankScore"], errors="coerce").ge(0.5).mean()
+        )
     summary_path = _write_dataset_summary(output_dir, dataset_summary)
     return dataset_path, summary_path, dataset_summary
 
@@ -181,6 +237,8 @@ def main() -> int:
     print(f"- Kept samples: {dataset_summary['keptSampleCount']}")
     print(f"- Dropped infeasible with incumbent: {dataset_summary['droppedInfeasibleCount']}")
     print(f"- Dropped with no incumbent: {dataset_summary['droppedNoIncumbentCount']}")
+    print(f"- Constraint labels generated: {'YES' if dataset_summary['constraintLabelGenerated'] else 'NO'}")
+    print(f"- Constraint label missing count: {dataset_summary['constraintLabelMissingCount']}")
     print(f"- Seed: {args.seed}")
     print(f"- Exact baseline runtime available: {'YES' if dataset_summary['exactBaselineUsed'] else 'NO'}")
     return 0

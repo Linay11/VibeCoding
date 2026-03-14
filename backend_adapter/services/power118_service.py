@@ -9,6 +9,8 @@ from typing import Any, Dict
 from backend_adapter.services.power118_dataset import load_power118_data
 from backend_adapter.services.power118_ml_model import (
     load_power118_model_artifacts,
+    predict_power118_constraints,
+    predict_power118_constraint_scores,
     predict_power118_schedule,
     resolve_power118_model_paths,
 )
@@ -45,6 +47,36 @@ def _utc_now_iso() -> str:
 def _run_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     return f"run-power-118-{ts}"
+
+
+def _normalize_power118_modes(run_mode: str | None, hybrid_strategy: str | None) -> tuple[str, str | None]:
+    requested_mode = (run_mode or "exact").strip().lower()
+    requested_hybrid_strategy = (hybrid_strategy or "").strip().lower()
+
+    if requested_mode == "hybrid":
+        requested_mode = "hybrid_warm_start"
+    elif requested_mode == "hybrid_constraint_aware":
+        requested_mode = "hybrid_constraint_aware_v2"
+
+    hybrid_strategy_aliases = {
+        "warm_start": "warm_start",
+        "constraint_aware": "constraint_aware_v2",
+        "constraint_aware_v2": "constraint_aware_v2",
+        "constraint_aware_v3": "constraint_aware_v3",
+        "fixing": "constraint_aware_v2",
+        "scoring": "constraint_aware_v3",
+    }
+    requested_hybrid_strategy = hybrid_strategy_aliases.get(requested_hybrid_strategy, requested_hybrid_strategy)
+
+    if requested_mode == "hybrid_warm_start":
+        return "hybrid_warm_start", "warm_start"
+    if requested_mode == "hybrid_constraint_aware_v2":
+        return "hybrid_constraint_aware_v2", "constraint_aware_v2"
+    if requested_mode == "hybrid_constraint_aware_v3":
+        return "hybrid_constraint_aware_v3", "constraint_aware_v3"
+    if requested_mode == "ml":
+        return "ml", None
+    return "exact", None
 
 
 def _base_model_artifacts(
@@ -167,9 +199,27 @@ def _decorate_payload(
     terminated_by_time_limit: bool | None = None,
     optimal: bool | None = None,
     has_incumbent: bool | None = None,
+    hybrid_strategy_requested: str | None = None,
+    hybrid_strategy_used: str | None = None,
+    constraint_aware_hybrid_used: bool | None = None,
+    reduced_solve_applied: bool | None = None,
+    fixed_commitment_count: int | None = None,
+    predicted_active_constraint_count: int | None = None,
+    constraint_confidence: float | None = None,
+    repair_after_reduced_solve: bool | None = None,
+    reduced_solve_fallback_reason: str | None = None,
+    constraint_scoring_used: bool | None = None,
+    critical_constraint_count: int | None = None,
+    deferred_constraint_count: int | None = None,
+    constraint_reactivation_count: int | None = None,
+    staged_solve_rounds: int | None = None,
+    constraint_aware_reduction_mode: str | None = None,
+    reduced_model_validated: bool | None = None,
+    reduction_rejected_reason: str | None = None,
 ) -> Dict[str, Any]:
     artifacts = model_artifacts or _base_model_artifacts()
     payload["requestedRunMode"] = requested_run_mode
+    payload["requestedMode"] = requested_run_mode
     payload["solverModeUsed"] = solver_mode_used
     payload["mlConfidence"] = float(ml_confidence) if ml_confidence is not None else None
     payload["repairApplied"] = bool(repair_applied) if repair_applied is not None else None
@@ -187,6 +237,34 @@ def _decorate_payload(
     payload["terminatedByTimeLimit"] = terminated_by_time_limit
     payload["optimal"] = optimal
     payload["hasIncumbent"] = has_incumbent
+    payload["hybridStrategyRequested"] = hybrid_strategy_requested
+    payload["hybridStrategyUsed"] = hybrid_strategy_used
+    payload["constraintAwareHybridUsed"] = constraint_aware_hybrid_used
+    payload["reducedSolveApplied"] = reduced_solve_applied
+    payload["fixedCommitmentCount"] = fixed_commitment_count
+    payload["predictedActiveConstraintCount"] = predicted_active_constraint_count
+    payload["constraintConfidence"] = constraint_confidence
+    payload["repairAfterReducedSolve"] = repair_after_reduced_solve
+    payload["reducedSolveFallbackReason"] = reduced_solve_fallback_reason
+    payload["constraintScoringUsed"] = constraint_scoring_used
+    payload["criticalConstraintCount"] = critical_constraint_count
+    payload["deferredConstraintCount"] = deferred_constraint_count
+    payload["constraintReactivationCount"] = constraint_reactivation_count
+    payload["stagedSolveRounds"] = staged_solve_rounds
+    payload["constraintAwareReductionMode"] = constraint_aware_reduction_mode
+    payload["reducedModelValidated"] = reduced_model_validated
+    payload["reductionRejectedReason"] = reduction_rejected_reason
+    total_binary_count = None
+    if fixed_commitment_count is not None:
+        dispatch = payload.get("unitCommitmentByHour")
+        if isinstance(dispatch, list) and dispatch and isinstance(dispatch[0], list):
+            total_binary_count = len(dispatch) * len(dispatch[0])
+    payload["fixedBinaryRatio"] = (
+        float(fixed_commitment_count) / float(total_binary_count)
+        if fixed_commitment_count is not None and total_binary_count
+        else None
+    )
+    payload["constraintReductionRatio"] = payload["fixedBinaryRatio"]
     return payload
 
 
@@ -199,6 +277,23 @@ def _compat_run_payload(
     preview_error: str | None = None,
     fallback_reason: str | None = None,
     model_artifacts: dict[str, Any] | None = None,
+    hybrid_strategy_requested: str | None = None,
+    hybrid_strategy_used: str | None = None,
+    constraint_aware_hybrid_used: bool | None = None,
+    reduced_solve_applied: bool | None = None,
+    fixed_commitment_count: int | None = None,
+    predicted_active_constraint_count: int | None = None,
+    constraint_confidence: float | None = None,
+    repair_after_reduced_solve: bool | None = None,
+    reduced_solve_fallback_reason: str | None = None,
+    constraint_scoring_used: bool | None = None,
+    critical_constraint_count: int | None = None,
+    deferred_constraint_count: int | None = None,
+    constraint_reactivation_count: int | None = None,
+    staged_solve_rounds: int | None = None,
+    constraint_aware_reduction_mode: str | None = None,
+    reduced_model_validated: bool | None = None,
+    reduction_rejected_reason: str | None = None,
 ) -> Dict[str, Any]:
     preview = preview or {}
     total_load_by_hour = preview.get("totalLoadByHour") if isinstance(preview.get("totalLoadByHour"), list) else []
@@ -265,6 +360,23 @@ def _compat_run_payload(
         terminated_by_time_limit=False,
         optimal=False,
         has_incumbent=False,
+        hybrid_strategy_requested=hybrid_strategy_requested,
+        hybrid_strategy_used=hybrid_strategy_used,
+        constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+        reduced_solve_applied=reduced_solve_applied,
+        fixed_commitment_count=fixed_commitment_count,
+        predicted_active_constraint_count=predicted_active_constraint_count,
+        constraint_confidence=constraint_confidence,
+        repair_after_reduced_solve=repair_after_reduced_solve,
+        reduced_solve_fallback_reason=reduced_solve_fallback_reason,
+        constraint_scoring_used=constraint_scoring_used,
+        critical_constraint_count=critical_constraint_count,
+        deferred_constraint_count=deferred_constraint_count,
+        constraint_reactivation_count=constraint_reactivation_count,
+        staged_solve_rounds=staged_solve_rounds,
+        constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+        reduced_model_validated=reduced_model_validated,
+        reduction_rejected_reason=reduction_rejected_reason,
     )
 
 
@@ -276,6 +388,23 @@ def _real_run_payload(
     ml_confidence: float | None = None,
     repair_applied: bool | None = None,
     fallback_reason: str | None = None,
+    hybrid_strategy_requested: str | None = None,
+    hybrid_strategy_used: str | None = None,
+    constraint_aware_hybrid_used: bool | None = None,
+    reduced_solve_applied: bool | None = None,
+    fixed_commitment_count: int | None = None,
+    predicted_active_constraint_count: int | None = None,
+    constraint_confidence: float | None = None,
+    repair_after_reduced_solve: bool | None = None,
+    reduced_solve_fallback_reason: str | None = None,
+    constraint_scoring_used: bool | None = None,
+    critical_constraint_count: int | None = None,
+    deferred_constraint_count: int | None = None,
+    constraint_reactivation_count: int | None = None,
+    staged_solve_rounds: int | None = None,
+    constraint_aware_reduction_mode: str | None = None,
+    reduced_model_validated: bool | None = None,
+    reduction_rejected_reason: str | None = None,
 ) -> Dict[str, Any]:
     objective = float(result.get("objective") or 0.0)
     top_generators = result.get("topGenerators") if isinstance(result.get("topGenerators"), list) else []
@@ -363,6 +492,23 @@ def _real_run_payload(
         terminated_by_time_limit=bool(result.get("terminatedByTimeLimit", False)),
         optimal=bool(result.get("optimal", False)),
         has_incumbent=bool(result.get("hasIncumbent", bool(result.get("feasible", True)))),
+        hybrid_strategy_requested=hybrid_strategy_requested,
+        hybrid_strategy_used=hybrid_strategy_used,
+        constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+        reduced_solve_applied=reduced_solve_applied,
+        fixed_commitment_count=fixed_commitment_count if fixed_commitment_count is not None else result.get("fixedCommitmentCount"),
+        predicted_active_constraint_count=predicted_active_constraint_count,
+        constraint_confidence=constraint_confidence,
+        repair_after_reduced_solve=repair_after_reduced_solve,
+        reduced_solve_fallback_reason=reduced_solve_fallback_reason,
+        constraint_scoring_used=constraint_scoring_used,
+        critical_constraint_count=critical_constraint_count,
+        deferred_constraint_count=deferred_constraint_count,
+        constraint_reactivation_count=constraint_reactivation_count,
+        staged_solve_rounds=staged_solve_rounds,
+        constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+        reduced_model_validated=reduced_model_validated,
+        reduction_rejected_reason=reduction_rejected_reason,
     )
 
 
@@ -373,6 +519,23 @@ def _ml_run_payload(
     solver_mode_used: str,
     model_artifacts: dict[str, Any] | None = None,
     fallback_reason: str | None = None,
+    hybrid_strategy_requested: str | None = None,
+    hybrid_strategy_used: str | None = None,
+    constraint_aware_hybrid_used: bool | None = None,
+    reduced_solve_applied: bool | None = None,
+    fixed_commitment_count: int | None = None,
+    predicted_active_constraint_count: int | None = None,
+    constraint_confidence: float | None = None,
+    repair_after_reduced_solve: bool | None = None,
+    reduced_solve_fallback_reason: str | None = None,
+    constraint_scoring_used: bool | None = None,
+    critical_constraint_count: int | None = None,
+    deferred_constraint_count: int | None = None,
+    constraint_reactivation_count: int | None = None,
+    staged_solve_rounds: int | None = None,
+    constraint_aware_reduction_mode: str | None = None,
+    reduced_model_validated: bool | None = None,
+    reduction_rejected_reason: str | None = None,
 ) -> Dict[str, Any]:
     artifacts = model_artifacts or _base_model_artifacts()
     note_parts = [
@@ -436,6 +599,23 @@ def _ml_run_payload(
         terminated_by_time_limit=False,
         optimal=False,
         has_incumbent=bool(prediction.get("feasible")),
+        hybrid_strategy_requested=hybrid_strategy_requested,
+        hybrid_strategy_used=hybrid_strategy_used,
+        constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+        reduced_solve_applied=reduced_solve_applied,
+        fixed_commitment_count=fixed_commitment_count,
+        predicted_active_constraint_count=predicted_active_constraint_count,
+        constraint_confidence=constraint_confidence,
+        repair_after_reduced_solve=repair_after_reduced_solve,
+        reduced_solve_fallback_reason=reduced_solve_fallback_reason,
+        constraint_scoring_used=constraint_scoring_used,
+        critical_constraint_count=critical_constraint_count,
+        deferred_constraint_count=deferred_constraint_count,
+        constraint_reactivation_count=constraint_reactivation_count,
+        staged_solve_rounds=staged_solve_rounds,
+        constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+        reduced_model_validated=reduced_model_validated,
+        reduction_rejected_reason=reduction_rejected_reason,
     )
 
 
@@ -446,18 +626,30 @@ def _run_solver(
     initial_unit_commitment: list[list[float]] | None = None,
     initial_dispatch: list[list[float]] | None = None,
     time_limit_ms: int | None = None,
+    fixed_commitment_mask: list[list[bool]] | None = None,
+    active_ramp_constraint_ids: list[str] | None = None,
+    active_line_constraint_ids: list[str] | None = None,
 ) -> tuple[Dict[str, Any] | None, str | None]:
     if not hasattr(module, "solve_scuc_118"):
         return None, "solve_scuc_118 is missing"
 
     try:
+        solve_kwargs = {
+            "data_path": data_path,
+            "write_output": False,
+            "overrides": overrides,
+            "initial_unit_commitment": initial_unit_commitment,
+            "initial_dispatch": initial_dispatch,
+            "time_limit_s": (float(time_limit_ms) / 1000.0 if time_limit_ms else None),
+        }
+        if fixed_commitment_mask is not None:
+            solve_kwargs["fixed_commitment_mask"] = fixed_commitment_mask
+        if active_ramp_constraint_ids is not None:
+            solve_kwargs["active_ramp_constraint_ids"] = active_ramp_constraint_ids
+        if active_line_constraint_ids is not None:
+            solve_kwargs["active_line_constraint_ids"] = active_line_constraint_ids
         result = module.solve_scuc_118(
-            data_path=data_path,
-            write_output=False,
-            overrides=overrides,
-            initial_unit_commitment=initial_unit_commitment,
-            initial_dispatch=initial_dispatch,
-            time_limit_s=(float(time_limit_ms) / 1000.0 if time_limit_ms else None),
+            **solve_kwargs,
         )
     except Exception as exc:  # pragma: no cover - depends on solver/runtime
         return None, str(exc)
@@ -492,6 +684,159 @@ def _predict_with_model(
     return prediction, None
 
 
+def _predict_constraints_with_model(
+    preview: dict[str, Any],
+    model_artifacts: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        prediction = predict_power118_constraints(
+            preview,
+            model_artifacts["modelBundle"],
+            metadata=model_artifacts.get("metadata"),
+        )
+    except Exception as exc:
+        return None, str(exc)
+    return prediction, None
+
+
+def _predict_constraint_scores_with_model(
+    preview: dict[str, Any],
+    schedule_prediction: dict[str, Any],
+    model_artifacts: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        prediction = predict_power118_constraint_scores(
+            preview,
+            schedule_prediction,
+            model_artifacts["modelBundle"],
+            metadata=model_artifacts.get("metadata"),
+        )
+    except Exception as exc:
+        return None, str(exc)
+    return prediction, None
+
+
+def _build_constraint_aware_fixing_plan(
+    schedule_prediction: dict[str, Any],
+    constraint_prediction: dict[str, Any] | None,
+) -> dict[str, Any]:
+    commitment_scores = schedule_prediction.get("commitmentScores")
+    commitment_confidence = schedule_prediction.get("commitmentConfidence")
+    unit_commitment = schedule_prediction.get("unitCommitmentByHour")
+    if not isinstance(commitment_scores, list) or not isinstance(commitment_confidence, list) or not isinstance(unit_commitment, list):
+        return {
+            "fixedCommitmentMask": None,
+            "fixedCommitmentCount": 0,
+            "constraintAwareHybridUsed": False,
+            "reducedSolveApplied": False,
+            "constraintConfidence": float(constraint_prediction.get("constraintConfidence", 0.0)) if isinstance(constraint_prediction, dict) else None,
+            "predictedActiveConstraintCount": int(constraint_prediction.get("predictedActiveConstraintCount", 0) or 0) if isinstance(constraint_prediction, dict) else 0,
+        }
+
+    num_generators = len(unit_commitment)
+    horizon = len(unit_commitment[0]) if unit_commitment else 0
+    if num_generators == 0 or horizon == 0:
+        return {
+            "fixedCommitmentMask": None,
+            "fixedCommitmentCount": 0,
+            "constraintAwareHybridUsed": False,
+            "reducedSolveApplied": False,
+            "constraintConfidence": float(constraint_prediction.get("constraintConfidence", 0.0)) if isinstance(constraint_prediction, dict) else None,
+            "predictedActiveConstraintCount": int(constraint_prediction.get("predictedActiveConstraintCount", 0) or 0) if isinstance(constraint_prediction, dict) else 0,
+        }
+
+    total_binary_count = num_generators * horizon
+    predicted_active_count = int(constraint_prediction.get("predictedActiveConstraintCount", 0) or 0) if isinstance(constraint_prediction, dict) else 0
+    constraint_confidence = float(constraint_prediction.get("constraintConfidence", 0.0) or 0.0) if isinstance(constraint_prediction, dict) else 0.0
+    fix_mask_scores = constraint_prediction.get("predictedFixedCommitmentMaskScores") if isinstance(constraint_prediction, dict) else None
+    if not isinstance(fix_mask_scores, list) or len(fix_mask_scores) != num_generators:
+        fix_mask_scores = [[1.0 for _ in range(horizon)] for _ in range(num_generators)]
+
+    active_ratio = min(max(predicted_active_count / float(max(total_binary_count, 1)), 0.0), 1.0)
+    target_fix_ratio = max(0.05, min(0.35, 0.25 - (0.12 * active_ratio)))
+    min_combined_score = 0.72
+
+    candidate_entries: list[tuple[float, int, int]] = []
+    for gen_index in range(num_generators):
+        for hour_index in range(horizon):
+            combined_score = float(commitment_confidence[gen_index][hour_index]) * float(fix_mask_scores[gen_index][hour_index])
+            candidate_entries.append((combined_score, gen_index, hour_index))
+
+    candidate_entries.sort(key=lambda item: item[0], reverse=True)
+    max_fix_count = max(1, int(round(total_binary_count * target_fix_ratio)))
+    fixed_mask = [[False for _ in range(horizon)] for _ in range(num_generators)]
+    fixed_count = 0
+    for combined_score, gen_index, hour_index in candidate_entries:
+        if fixed_count >= max_fix_count:
+            break
+        if combined_score < min_combined_score:
+            break
+        fixed_mask[gen_index][hour_index] = True
+        fixed_count += 1
+
+    return {
+        "fixedCommitmentMask": fixed_mask if fixed_count > 0 else None,
+        "fixedCommitmentCount": fixed_count,
+        "constraintAwareHybridUsed": True,
+        "reducedSolveApplied": fixed_count > 0,
+        "constraintConfidence": constraint_confidence,
+        "predictedActiveConstraintCount": predicted_active_count,
+    }
+
+
+def _build_constraint_scoring_plan(
+    constraint_scoring: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(constraint_scoring, dict):
+        return {
+            "criticalConstraintIds": None,
+            "deferredConstraintIds": None,
+            "criticalConstraintCount": 0,
+            "deferredConstraintCount": 0,
+            "constraintConfidence": None,
+        }
+
+    critical_ids = [str(value) for value in constraint_scoring.get("topKConstraintIds", [])]
+    deferred_ids = [
+        str(item.get("constraintId"))
+        for item in constraint_scoring.get("predictedReducibleConstraints", [])
+        if isinstance(item, dict) and item.get("constraintId")
+    ]
+    return {
+        "criticalConstraintIds": critical_ids,
+        "deferredConstraintIds": deferred_ids,
+        "criticalConstraintCount": int(constraint_scoring.get("criticalConstraintCount", len(critical_ids))),
+        "deferredConstraintCount": int(constraint_scoring.get("deferredConstraintCount", len(deferred_ids))),
+        "constraintConfidence": float(constraint_scoring.get("constraintConfidence", 0.0) or 0.0),
+    }
+
+
+def _violated_deferred_constraint_ids(
+    result: dict[str, Any] | None,
+    deferred_constraint_ids: list[str] | None,
+    violation_tolerance: float = 1e-4,
+) -> list[str]:
+    if not isinstance(result, dict) or not deferred_constraint_ids:
+        return []
+    diagnostics = result.get("constraintDiagnostics") if isinstance(result.get("constraintDiagnostics"), dict) else {}
+    slack_records = diagnostics.get("slackRecords") if isinstance(diagnostics.get("slackRecords"), dict) else {}
+    deferred_id_set = {str(value) for value in deferred_constraint_ids}
+    violated_ids: list[str] = []
+    for records in slack_records.values():
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            constraint_id = str(record.get("constraintId") or "")
+            if constraint_id not in deferred_id_set:
+                continue
+            raw_slack = float(record.get("rawSlack", record.get("slack", 0.0)) or 0.0)
+            if raw_slack < -violation_tolerance:
+                violated_ids.append(constraint_id)
+    return violated_ids
+
+
 def run_power118_once(
     run_mode: str = "exact",
     time_limit_ms: int | None = None,
@@ -499,11 +844,10 @@ def run_power118_once(
     overrides: dict[str, Any] | None = None,
     model_path: str | Path | None = None,
     metadata_path: str | Path | None = None,
+    hybrid_strategy: str = "warm_start",
 ) -> Dict[str, Any]:
     start = perf_counter()
-    requested_mode = (run_mode or "exact").strip().lower()
-    if requested_mode not in {"exact", "hybrid", "ml"}:
-        requested_mode = "exact"
+    requested_mode, requested_hybrid_strategy = _normalize_power118_modes(run_mode, hybrid_strategy)
 
     module = _load_module()
     data_path = _power118_data()
@@ -666,6 +1010,72 @@ def run_power118_once(
             model_artifacts=model_artifacts,
         )
 
+    constraint_prediction = None
+    constraint_prediction_error = None
+    constraint_scoring = None
+    constraint_scoring_error = None
+    fixing_plan = {
+        "fixedCommitmentMask": None,
+        "fixedCommitmentCount": 0,
+        "constraintAwareHybridUsed": False,
+        "reducedSolveApplied": False,
+        "constraintConfidence": None,
+        "predictedActiveConstraintCount": 0,
+    }
+    scoring_plan = {
+        "criticalConstraintIds": None,
+        "deferredConstraintIds": None,
+        "criticalConstraintCount": 0,
+        "deferredConstraintCount": 0,
+        "constraintConfidence": None,
+    }
+    active_ramp_constraint_ids = None
+    active_line_constraint_ids = None
+
+    if requested_mode == "hybrid_constraint_aware_v2":
+        constraint_prediction, constraint_prediction_error = _predict_constraints_with_model(preview, model_artifacts)
+        if constraint_prediction_error is None and constraint_prediction is not None:
+            fixing_plan = _build_constraint_aware_fixing_plan(prediction, constraint_prediction)
+        else:
+            fixing_plan["constraintConfidence"] = 0.0
+
+    if requested_mode == "hybrid_constraint_aware_v3":
+        constraint_scoring, constraint_scoring_error = _predict_constraint_scores_with_model(preview, prediction, model_artifacts)
+        if constraint_scoring_error is None and constraint_scoring is not None:
+            scoring_plan = _build_constraint_scoring_plan(constraint_scoring)
+            critical_ids = scoring_plan["criticalConstraintIds"] or []
+            active_ramp_constraint_ids = [constraint_id for constraint_id in critical_ids if str(constraint_id).startswith("ramp:")]
+            active_line_constraint_ids = [constraint_id for constraint_id in critical_ids if str(constraint_id).startswith("line:")]
+        else:
+            scoring_plan["constraintConfidence"] = 0.0
+
+    constraint_aware_hybrid_used = requested_mode in {"hybrid_constraint_aware_v2", "hybrid_constraint_aware_v3"}
+    reduced_solve_applied = bool(fixing_plan["reducedSolveApplied"]) or bool(scoring_plan["criticalConstraintIds"])
+    predicted_active_constraint_count = (
+        int(fixing_plan["predictedActiveConstraintCount"])
+        if requested_hybrid_strategy == "constraint_aware_v2"
+        else int(scoring_plan["criticalConstraintCount"])
+    )
+    constraint_confidence_value = (
+        fixing_plan["constraintConfidence"]
+        if requested_hybrid_strategy == "constraint_aware_v2"
+        else scoring_plan["constraintConfidence"]
+    )
+    constraint_scoring_used = requested_hybrid_strategy == "constraint_aware_v3"
+    critical_constraint_count = int(scoring_plan["criticalConstraintCount"])
+    deferred_constraint_count = int(scoring_plan["deferredConstraintCount"])
+    constraint_reactivation_count = 0
+    staged_solve_rounds = 1
+    reduced_model_validated = None
+    reduction_rejected_reason = constraint_prediction_error or constraint_scoring_error
+    constraint_aware_reduction_mode = (
+        "fixed_commitment_mask"
+        if requested_hybrid_strategy == "constraint_aware_v2"
+        else "critical_constraint_subset"
+        if requested_hybrid_strategy == "constraint_aware_v3"
+        else "warm_start_only"
+    )
+
     if not runtime.get("available"):
         elapsed_ms = (perf_counter() - start) * 1000.0
         if prediction.get("feasible"):
@@ -676,6 +1086,22 @@ def run_power118_once(
                 solver_mode_used="ml",
                 model_artifacts=model_artifacts,
                 fallback_reason=f"hybrid requested but {_translate_runtime_reason(runtime)}",
+                hybrid_strategy_requested=requested_hybrid_strategy,
+                hybrid_strategy_used=requested_hybrid_strategy,
+                constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+                reduced_solve_applied=reduced_solve_applied,
+                fixed_commitment_count=int(fixing_plan["fixedCommitmentCount"]),
+                predicted_active_constraint_count=predicted_active_constraint_count,
+                constraint_confidence=constraint_confidence_value,
+                reduced_solve_fallback_reason=constraint_prediction_error or constraint_scoring_error,
+                constraint_scoring_used=constraint_scoring_used,
+                critical_constraint_count=critical_constraint_count,
+                deferred_constraint_count=deferred_constraint_count,
+                constraint_reactivation_count=constraint_reactivation_count,
+                staged_solve_rounds=staged_solve_rounds,
+                constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+                reduced_model_validated=reduced_model_validated,
+                reduction_rejected_reason=reduction_rejected_reason,
             )
         return _compat_run_payload(
             elapsed_ms=elapsed_ms,
@@ -685,8 +1111,25 @@ def run_power118_once(
             preview=preview,
             preview_error=preview_error,
             model_artifacts=model_artifacts,
+            hybrid_strategy_requested=requested_hybrid_strategy,
+            hybrid_strategy_used=requested_hybrid_strategy,
+            constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+            reduced_solve_applied=reduced_solve_applied,
+            fixed_commitment_count=int(fixing_plan["fixedCommitmentCount"]),
+            predicted_active_constraint_count=predicted_active_constraint_count,
+            constraint_confidence=constraint_confidence_value,
+            reduced_solve_fallback_reason=constraint_prediction_error or constraint_scoring_error,
+            constraint_scoring_used=constraint_scoring_used,
+            critical_constraint_count=critical_constraint_count,
+            deferred_constraint_count=deferred_constraint_count,
+            constraint_reactivation_count=constraint_reactivation_count,
+            staged_solve_rounds=staged_solve_rounds,
+            constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+            reduced_model_validated=reduced_model_validated,
+            reduction_rejected_reason=reduction_rejected_reason,
         )
 
+    reduced_solve_fallback_reason = None
     result, solve_error = _run_solver(
         module,
         data_path,
@@ -694,10 +1137,85 @@ def run_power118_once(
         initial_unit_commitment=prediction.get("unitCommitmentByHour"),
         initial_dispatch=prediction.get("generatorDispatchByHour"),
         time_limit_ms=time_limit_ms,
+        fixed_commitment_mask=fixing_plan["fixedCommitmentMask"],
+        active_ramp_constraint_ids=active_ramp_constraint_ids,
+        active_line_constraint_ids=active_line_constraint_ids,
     )
+    if solve_error is None and requested_hybrid_strategy == "constraint_aware_v3" and _is_real_result(result):
+        violated_deferred_ids = _violated_deferred_constraint_ids(result, scoring_plan["deferredConstraintIds"])
+        if violated_deferred_ids:
+            constraint_reactivation_count = len(violated_deferred_ids)
+            staged_solve_rounds = 2
+            expanded_critical_ids = list((scoring_plan["criticalConstraintIds"] or []) + violated_deferred_ids)
+            active_ramp_constraint_ids = [constraint_id for constraint_id in expanded_critical_ids if str(constraint_id).startswith("ramp:")]
+            active_line_constraint_ids = [constraint_id for constraint_id in expanded_critical_ids if str(constraint_id).startswith("line:")]
+            second_result, second_error = _run_solver(
+                module,
+                data_path,
+                overrides=overrides,
+                initial_unit_commitment=prediction.get("unitCommitmentByHour"),
+                initial_dispatch=prediction.get("generatorDispatchByHour"),
+                time_limit_ms=time_limit_ms,
+                active_ramp_constraint_ids=active_ramp_constraint_ids,
+                active_line_constraint_ids=active_line_constraint_ids,
+            )
+            if second_error is None and _is_real_result(second_result):
+                result = second_result
+                remaining_violations = _violated_deferred_constraint_ids(result, scoring_plan["deferredConstraintIds"])
+                if remaining_violations:
+                    reduction_rejected_reason = "deferred constraints still violated after staged reactivation"
+                    reduced_model_validated = False
+                else:
+                    reduced_model_validated = True
+                    reduction_rejected_reason = None
+            else:
+                solve_error = second_error or "staged reactivation solve failed"
+                reduced_model_validated = False
+                reduction_rejected_reason = solve_error
+        else:
+            reduced_model_validated = True
+            reduction_rejected_reason = None
     if solve_error:
-        fallback_reason = f"hybrid warm-start solve failed: {solve_error}"
+        fallback_reason = f"hybrid {requested_hybrid_strategy} solve failed: {solve_error}"
+        reduced_solve_fallback_reason = fallback_reason
         if fallback_to_exact:
+            if requested_hybrid_strategy in {"constraint_aware_v2", "constraint_aware_v3"}:
+                warm_result, warm_error = _run_solver(
+                    module,
+                    data_path,
+                    overrides=overrides,
+                    initial_unit_commitment=prediction.get("unitCommitmentByHour"),
+                    initial_dispatch=prediction.get("generatorDispatchByHour"),
+                    time_limit_ms=time_limit_ms,
+                )
+                if warm_error is None and _is_real_result(warm_result):
+                    assert warm_result is not None
+                    warm_result.setdefault("runtime", runtime)
+                    return _real_run_payload(
+                        warm_result,
+                        requested_run_mode=requested_mode,
+                        solver_mode_used="hybrid",
+                        model_artifacts=model_artifacts,
+                        ml_confidence=float(prediction.get("mlConfidence") or 0.0),
+                        repair_applied=bool(prediction.get("repairApplied")),
+                        hybrid_strategy_requested=requested_hybrid_strategy,
+                        hybrid_strategy_used="warm_start",
+                        constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+                        reduced_solve_applied=reduced_solve_applied,
+                        fixed_commitment_count=int(fixing_plan["fixedCommitmentCount"]),
+                        predicted_active_constraint_count=predicted_active_constraint_count,
+                        constraint_confidence=constraint_confidence_value,
+                        repair_after_reduced_solve=True,
+                        reduced_solve_fallback_reason=reduced_solve_fallback_reason,
+                        constraint_scoring_used=constraint_scoring_used,
+                        critical_constraint_count=critical_constraint_count,
+                        deferred_constraint_count=deferred_constraint_count,
+                        constraint_reactivation_count=constraint_reactivation_count,
+                        staged_solve_rounds=staged_solve_rounds,
+                        constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+                        reduced_model_validated=reduced_model_validated,
+                        reduction_rejected_reason=reduction_rejected_reason,
+                    )
             fallback_result, exact_error = _run_solver(module, data_path, overrides=overrides, time_limit_ms=time_limit_ms)
             if exact_error is None and _is_real_result(fallback_result):
                 assert fallback_result is not None
@@ -710,6 +1228,23 @@ def run_power118_once(
                     ml_confidence=float(prediction.get("mlConfidence") or 0.0),
                     repair_applied=bool(prediction.get("repairApplied")),
                     fallback_reason=fallback_reason,
+                    hybrid_strategy_requested=requested_hybrid_strategy,
+                    hybrid_strategy_used="exact",
+                    constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+                    reduced_solve_applied=reduced_solve_applied,
+                    fixed_commitment_count=int(fixing_plan["fixedCommitmentCount"]),
+                    predicted_active_constraint_count=predicted_active_constraint_count,
+                    constraint_confidence=constraint_confidence_value,
+                    repair_after_reduced_solve=True,
+                    reduced_solve_fallback_reason=reduced_solve_fallback_reason,
+                    constraint_scoring_used=constraint_scoring_used,
+                    critical_constraint_count=critical_constraint_count,
+                    deferred_constraint_count=deferred_constraint_count,
+                    constraint_reactivation_count=constraint_reactivation_count,
+                    staged_solve_rounds=staged_solve_rounds,
+                    constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+                    reduced_model_validated=reduced_model_validated,
+                    reduction_rejected_reason=reduction_rejected_reason,
                 )
         elapsed_ms = (perf_counter() - start) * 1000.0
         if prediction.get("feasible"):
@@ -720,6 +1255,23 @@ def run_power118_once(
                 solver_mode_used="ml",
                 model_artifacts=model_artifacts,
                 fallback_reason=fallback_reason,
+                hybrid_strategy_requested=requested_hybrid_strategy,
+                hybrid_strategy_used="ml",
+                constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+                reduced_solve_applied=reduced_solve_applied,
+                fixed_commitment_count=int(fixing_plan["fixedCommitmentCount"]),
+                predicted_active_constraint_count=predicted_active_constraint_count,
+                constraint_confidence=constraint_confidence_value,
+                repair_after_reduced_solve=True,
+                reduced_solve_fallback_reason=reduced_solve_fallback_reason,
+                constraint_scoring_used=constraint_scoring_used,
+                critical_constraint_count=critical_constraint_count,
+                deferred_constraint_count=deferred_constraint_count,
+                constraint_reactivation_count=constraint_reactivation_count,
+                staged_solve_rounds=staged_solve_rounds,
+                constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+                reduced_model_validated=reduced_model_validated,
+                reduction_rejected_reason=reduction_rejected_reason,
             )
         return _compat_run_payload(
             elapsed_ms=elapsed_ms,
@@ -730,6 +1282,23 @@ def run_power118_once(
             preview_error=preview_error,
             fallback_reason=fallback_reason,
             model_artifacts=model_artifacts,
+            hybrid_strategy_requested=requested_hybrid_strategy,
+            hybrid_strategy_used=requested_hybrid_strategy,
+            constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+            reduced_solve_applied=reduced_solve_applied,
+            fixed_commitment_count=int(fixing_plan["fixedCommitmentCount"]),
+            predicted_active_constraint_count=predicted_active_constraint_count,
+            constraint_confidence=constraint_confidence_value,
+            repair_after_reduced_solve=True,
+            reduced_solve_fallback_reason=reduced_solve_fallback_reason,
+            constraint_scoring_used=constraint_scoring_used,
+            critical_constraint_count=critical_constraint_count,
+            deferred_constraint_count=deferred_constraint_count,
+            constraint_reactivation_count=constraint_reactivation_count,
+            staged_solve_rounds=staged_solve_rounds,
+            constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+            reduced_model_validated=reduced_model_validated,
+            reduction_rejected_reason=reduction_rejected_reason,
         )
 
     if result is not None:
@@ -748,6 +1317,23 @@ def run_power118_once(
             model_artifacts=model_artifacts,
             ml_confidence=float(prediction.get("mlConfidence") or 0.0),
             repair_applied=bool(prediction.get("repairApplied")),
+            hybrid_strategy_requested=requested_hybrid_strategy,
+            hybrid_strategy_used=requested_hybrid_strategy,
+            constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+            reduced_solve_applied=reduced_solve_applied,
+            fixed_commitment_count=int(fixing_plan["fixedCommitmentCount"]),
+            predicted_active_constraint_count=predicted_active_constraint_count,
+            constraint_confidence=constraint_confidence_value,
+            repair_after_reduced_solve=bool(constraint_reactivation_count > 0),
+            reduced_solve_fallback_reason=reduced_solve_fallback_reason,
+            constraint_scoring_used=constraint_scoring_used,
+            critical_constraint_count=critical_constraint_count,
+            deferred_constraint_count=deferred_constraint_count,
+            constraint_reactivation_count=constraint_reactivation_count,
+            staged_solve_rounds=staged_solve_rounds,
+            constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+            reduced_model_validated=reduced_model_validated,
+            reduction_rejected_reason=reduction_rejected_reason,
         )
 
     elapsed_ms = float(result.get("solveTimeMs") or (perf_counter() - start) * 1000.0) if result else (perf_counter() - start) * 1000.0
@@ -759,6 +1345,23 @@ def run_power118_once(
             solver_mode_used="ml",
             model_artifacts=model_artifacts,
             fallback_reason="hybrid solve returned non-real status; returned ML schedule",
+            hybrid_strategy_requested=requested_hybrid_strategy,
+            hybrid_strategy_used="ml",
+            constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+            reduced_solve_applied=reduced_solve_applied,
+            fixed_commitment_count=int(fixing_plan["fixedCommitmentCount"]),
+            predicted_active_constraint_count=predicted_active_constraint_count,
+            constraint_confidence=constraint_confidence_value,
+            repair_after_reduced_solve=True,
+            reduced_solve_fallback_reason="hybrid solve returned non-real status; returned ML schedule",
+            constraint_scoring_used=constraint_scoring_used,
+            critical_constraint_count=critical_constraint_count,
+            deferred_constraint_count=deferred_constraint_count,
+            constraint_reactivation_count=constraint_reactivation_count,
+            staged_solve_rounds=staged_solve_rounds,
+            constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+            reduced_model_validated=reduced_model_validated,
+            reduction_rejected_reason=reduction_rejected_reason,
         )
 
     return _compat_run_payload(
@@ -769,4 +1372,21 @@ def run_power118_once(
         preview=preview,
         preview_error=preview_error,
         model_artifacts=model_artifacts,
+        hybrid_strategy_requested=requested_hybrid_strategy,
+        hybrid_strategy_used=requested_hybrid_strategy,
+        constraint_aware_hybrid_used=constraint_aware_hybrid_used,
+        reduced_solve_applied=reduced_solve_applied,
+        fixed_commitment_count=int(fixing_plan["fixedCommitmentCount"]),
+        predicted_active_constraint_count=predicted_active_constraint_count,
+        constraint_confidence=constraint_confidence_value,
+        repair_after_reduced_solve=True,
+        reduced_solve_fallback_reason="hybrid solve returned non-real result",
+        constraint_scoring_used=constraint_scoring_used,
+        critical_constraint_count=critical_constraint_count,
+        deferred_constraint_count=deferred_constraint_count,
+        constraint_reactivation_count=constraint_reactivation_count,
+        staged_solve_rounds=staged_solve_rounds,
+        constraint_aware_reduction_mode=constraint_aware_reduction_mode,
+        reduced_model_validated=reduced_model_validated,
+        reduction_rejected_reason=reduction_rejected_reason or "hybrid solve returned non-real result",
     )

@@ -266,6 +266,217 @@ def test_power118_service_returns_hybrid_payload_when_warm_start_succeeds(monkey
     assert run["feasible"] is True
 
 
+def test_power118_service_returns_constraint_aware_v2_payload_when_reduced_solve_succeeds(monkeypatch) -> None:
+    fake_module = SimpleNamespace(
+        check_gurobi_runtime=lambda: {
+            "available": True,
+            "stage": "ready",
+            "reason": "gurobi runtime ready",
+        },
+        load_power118_data=lambda data_path, overrides=None: _preview_payload(),
+        solve_scuc_118=lambda data_path, write_output=False, overrides=None, initial_unit_commitment=None, initial_dispatch=None, time_limit_s=None, fixed_commitment_mask=None, active_ramp_constraint_ids=None, active_line_constraint_ids=None: {
+            "runtime": {"available": True, "stage": "ready", "reason": "gurobi runtime ready"},
+            "statusName": "TIME_LIMIT",
+            "statusCode": 9,
+            "solutionCount": 1,
+            "terminatedByTimeLimit": True,
+            "optimal": False,
+            "hasIncumbent": True,
+            "feasible": True,
+            "objective": 118.0,
+            "solveTimeMs": 15.0,
+            "summary": _preview_payload()["summary"],
+            "totalLoadByHour": [100.0, 120.0, 140.0],
+            "topGenerators": [{"label": "Gen 27", "value": 1800.0}],
+            "peakLineFlowByHour": [90.0, 95.0, 91.0],
+            "warmStartUsed": initial_unit_commitment is not None or initial_dispatch is not None,
+            "fixedCommitmentCount": sum(1 for row in fixed_commitment_mask for item in row if item) if fixed_commitment_mask else 0,
+        },
+    )
+
+    monkeypatch.setattr(power118_service, "_load_module", lambda: fake_module)
+    monkeypatch.setattr(power118_service, "_power118_data", lambda: Path(__file__))
+    monkeypatch.setattr(power118_service, "load_power118_model_artifacts", _loaded_artifacts)
+    monkeypatch.setattr(
+        power118_service,
+        "_predict_with_model",
+        lambda preview, model_artifacts: ({
+            "feasible": True,
+            "objective": 120.0,
+            "mlConfidence": 0.81,
+            "repairApplied": False,
+            "unitCommitmentByHour": [[1.0, 1.0, 1.0] for _ in range(54)],
+            "generatorDispatchByHour": [[1.0, 1.0, 1.0] for _ in range(54)],
+            "commitmentScores": [[0.95, 0.02, 0.92] for _ in range(54)],
+            "commitmentConfidence": [[0.9, 0.96, 0.84] for _ in range(54)],
+            "topGenerators": [{"label": "Gen 27", "value": 1800.0}],
+            "totalLoadByHour": [100.0, 120.0, 140.0],
+            "modelVersion": "power118-baseline-v1",
+            "featureSchemaVersion": "power118-feature-schema-v1",
+        }, None),
+    )
+    monkeypatch.setattr(
+        power118_service,
+        "_predict_constraints_with_model",
+        lambda preview, model_artifacts: ({
+            "predictedActiveConstraintCount": 11,
+            "predictedFixedCommitmentMaskScores": [[0.9, 0.2, 0.85] for _ in range(54)],
+            "constraintConfidence": 0.77,
+            "constraintModelEnabled": True,
+        }, None),
+    )
+
+    run = power118_service.run_power118_once(run_mode="hybrid_constraint_aware_v2")
+
+    assert run["adapterMode"] == "real"
+    assert run["solverModeUsed"] == "hybrid"
+    assert run["requestedMode"] == "hybrid_constraint_aware_v2"
+    assert run["constraintAwareHybridUsed"] is True
+    assert run["reducedSolveApplied"] is True
+    assert run["fixedCommitmentCount"] > 0
+    assert run["predictedActiveConstraintCount"] == 11
+    assert run["constraintConfidence"] == 0.77
+
+
+def test_power118_service_returns_constraint_aware_v3_payload_when_reduced_solve_succeeds(monkeypatch) -> None:
+    fake_module = SimpleNamespace(
+        check_gurobi_runtime=lambda: {"available": True, "stage": "ready", "reason": "gurobi runtime ready"},
+        load_power118_data=lambda data_path, overrides=None: _preview_payload(),
+        solve_scuc_118=lambda data_path, write_output=False, overrides=None, initial_unit_commitment=None, initial_dispatch=None, time_limit_s=None, fixed_commitment_mask=None, active_ramp_constraint_ids=None, active_line_constraint_ids=None: {
+            "runtime": {"available": True, "stage": "ready", "reason": "gurobi runtime ready"},
+            "statusName": "TIME_LIMIT",
+            "statusCode": 9,
+            "solutionCount": 1,
+            "terminatedByTimeLimit": True,
+            "optimal": False,
+            "hasIncumbent": True,
+            "feasible": True,
+            "objective": 117.0,
+            "solveTimeMs": 14.0,
+            "summary": _preview_payload()["summary"],
+            "totalLoadByHour": [100.0, 120.0, 140.0],
+            "topGenerators": [{"label": "Gen 27", "value": 1800.0}],
+            "peakLineFlowByHour": [90.0, 95.0, 91.0],
+        },
+    )
+
+    monkeypatch.setattr(power118_service, "_load_module", lambda: fake_module)
+    monkeypatch.setattr(power118_service, "_power118_data", lambda: Path(__file__))
+    monkeypatch.setattr(power118_service, "load_power118_model_artifacts", _loaded_artifacts)
+    monkeypatch.setattr(
+        power118_service,
+        "_predict_with_model",
+        lambda preview, model_artifacts: ({
+            "feasible": True,
+            "objective": 120.0,
+            "mlConfidence": 0.81,
+            "repairApplied": False,
+            "unitCommitmentByHour": [[1.0, 1.0, 1.0] for _ in range(54)],
+            "generatorDispatchByHour": [[1.0, 1.0, 1.0] for _ in range(54)],
+            "commitmentScores": [[0.95, 0.02, 0.92] for _ in range(54)],
+            "commitmentConfidence": [[0.9, 0.96, 0.84] for _ in range(54)],
+            "topGenerators": [{"label": "Gen 27", "value": 1800.0}],
+            "totalLoadByHour": [100.0, 120.0, 140.0],
+            "modelVersion": "power118-baseline-v1",
+            "featureSchemaVersion": "power118-feature-schema-v1",
+        }, None),
+    )
+    monkeypatch.setattr(
+        power118_service,
+        "_predict_constraint_scores_with_model",
+        lambda preview, schedule_prediction, model_artifacts: ({
+            "constraintScores": {"ramp:g1:h1:up": 0.9},
+            "predictedCriticalConstraints": [{"constraintId": "ramp:g1:h1:up", "predictedScore": 0.9}],
+            "predictedReducibleConstraints": [{"constraintId": "line:g1:h1:absCap", "predictedScore": 0.1}],
+            "constraintConfidence": 0.82,
+            "topKConstraintIds": ["ramp:g1:h1:up"],
+            "criticalConstraintCount": 1,
+            "deferredConstraintCount": 1,
+        }, None),
+    )
+
+    run = power118_service.run_power118_once(run_mode="hybrid_constraint_aware_v3")
+
+    assert run["adapterMode"] == "real"
+    assert run["requestedMode"] == "hybrid_constraint_aware_v3"
+    assert run["solverModeUsed"] == "hybrid"
+    assert run["constraintScoringUsed"] is True
+    assert run["criticalConstraintCount"] == 1
+    assert run["deferredConstraintCount"] == 1
+    assert run["stagedSolveRounds"] == 1
+
+
+def test_power118_service_constraint_aware_hybrid_falls_back_to_warm_start(monkeypatch) -> None:
+    call_counter = {"count": 0}
+
+    def fake_solver(data_path, write_output=False, overrides=None, initial_unit_commitment=None, initial_dispatch=None, time_limit_s=None, fixed_commitment_mask=None, active_ramp_constraint_ids=None, active_line_constraint_ids=None):
+        call_counter["count"] += 1
+        if fixed_commitment_mask is not None:
+            raise RuntimeError("reduced solve infeasible")
+        return {
+            "runtime": {"available": True, "stage": "ready", "reason": "gurobi runtime ready"},
+            "statusName": "TIME_LIMIT",
+            "statusCode": 9,
+            "solutionCount": 1,
+            "terminatedByTimeLimit": True,
+            "optimal": False,
+            "hasIncumbent": True,
+            "feasible": True,
+            "objective": 119.0,
+            "solveTimeMs": 16.0,
+            "summary": _preview_payload()["summary"],
+            "totalLoadByHour": [100.0, 120.0, 140.0],
+            "topGenerators": [{"label": "Gen 27", "value": 1800.0}],
+            "peakLineFlowByHour": [90.0, 95.0, 91.0],
+        }
+
+    fake_module = SimpleNamespace(
+        check_gurobi_runtime=lambda: {"available": True, "stage": "ready", "reason": "gurobi runtime ready"},
+        load_power118_data=lambda data_path, overrides=None: _preview_payload(),
+        solve_scuc_118=fake_solver,
+    )
+
+    monkeypatch.setattr(power118_service, "_load_module", lambda: fake_module)
+    monkeypatch.setattr(power118_service, "_power118_data", lambda: Path(__file__))
+    monkeypatch.setattr(power118_service, "load_power118_model_artifacts", _loaded_artifacts)
+    monkeypatch.setattr(
+        power118_service,
+        "_predict_with_model",
+        lambda preview, model_artifacts: ({
+            "feasible": True,
+            "objective": 120.0,
+            "mlConfidence": 0.81,
+            "repairApplied": False,
+            "unitCommitmentByHour": [[1.0, 1.0, 1.0] for _ in range(54)],
+            "generatorDispatchByHour": [[1.0, 1.0, 1.0] for _ in range(54)],
+            "commitmentScores": [[0.95, 0.02, 0.92] for _ in range(54)],
+            "commitmentConfidence": [[0.9, 0.96, 0.84] for _ in range(54)],
+            "topGenerators": [{"label": "Gen 27", "value": 1800.0}],
+            "totalLoadByHour": [100.0, 120.0, 140.0],
+            "modelVersion": "power118-baseline-v1",
+            "featureSchemaVersion": "power118-feature-schema-v1",
+        }, None),
+    )
+    monkeypatch.setattr(
+        power118_service,
+        "_predict_constraints_with_model",
+        lambda preview, model_artifacts: ({
+            "predictedActiveConstraintCount": 11,
+            "predictedFixedCommitmentMaskScores": [[0.9, 0.2, 0.85] for _ in range(54)],
+            "constraintConfidence": 0.77,
+            "constraintModelEnabled": True,
+        }, None),
+    )
+
+    run = power118_service.run_power118_once(run_mode="hybrid_constraint_aware_v2")
+
+    assert run["hybridStrategyRequested"] == "constraint_aware_v2"
+    assert run["hybridStrategyUsed"] == "warm_start"
+    assert run["repairAfterReducedSolve"] is True
+    assert "reduced solve infeasible" in run["reducedSolveFallbackReason"]
+    assert call_counter["count"] == 2
+
+
 def test_power118_service_falls_back_when_model_schema_mismatches(monkeypatch) -> None:
     fake_module = SimpleNamespace(
         check_gurobi_runtime=lambda: {
