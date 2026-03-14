@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from scripts import check_power118_eval_consistency as consistency_script
 from scripts import build_power118_ml_dataset as dataset_script
 from scripts import eval_power118_modes as eval_script
 from scripts import train_power118_model as train_script
@@ -168,9 +169,45 @@ def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None
 
     def fake_run_power118_once(run_mode="exact", **kwargs):
         mode_map = {
-            "exact": {"solverModeUsed": "exact", "adapterMode": "real", "runtimeMs": 100.0, "objectiveValue": 50.0, "feasible": True},
-            "hybrid": {"solverModeUsed": "hybrid", "adapterMode": "real", "runtimeMs": 40.0, "objectiveValue": 52.0, "feasible": True, "repairApplied": True},
-            "ml": {"solverModeUsed": "ml", "adapterMode": "real", "runtimeMs": 20.0, "objectiveValue": 55.0, "feasible": True, "mlConfidence": 0.8},
+            "exact": {
+                "solverModeUsed": "exact",
+                "adapterMode": "real",
+                "runtimeMs": 100.0,
+                "objectiveValue": 50.0,
+                "feasible": True,
+                "statusName": "TIME_LIMIT",
+                "terminatedByTimeLimit": True,
+                "hasIncumbent": True,
+                "optimal": False,
+                "solutionCount": 1,
+            },
+            "hybrid": {
+                "solverModeUsed": "exact",
+                "adapterMode": "real",
+                "runtimeMs": 140.0,
+                "objectiveValue": 52.0,
+                "feasible": True,
+                "repairApplied": True,
+                "fallbackReason": "hybrid warm-start solve failed: numeric issue",
+                "statusName": "TIME_LIMIT",
+                "terminatedByTimeLimit": True,
+                "hasIncumbent": True,
+                "optimal": False,
+                "solutionCount": 1,
+            },
+            "ml": {
+                "solverModeUsed": "ml",
+                "adapterMode": "real",
+                "runtimeMs": 20.0,
+                "objectiveValue": 55.0,
+                "feasible": True,
+                "mlConfidence": 0.8,
+                "statusName": "ML_PREDICTED",
+                "terminatedByTimeLimit": False,
+                "hasIncumbent": True,
+                "optimal": False,
+                "solutionCount": None,
+            },
         }
         payload = {
             "fallbackReason": None,
@@ -197,5 +234,121 @@ def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None
 
     assert len(records) == 6
     assert summary_payload["evaluation"]["exactRealBaselineAvailable"] is True
+    exact_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "exact")
+    hybrid_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "hybrid")
+    ml_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "ml")
+    assert exact_summary["statusCounts"]["TIME_LIMIT_FEASIBLE"] == 2
+    assert summary_payload["evaluation"]["exactBaselineStatus"] == "TIME_LIMIT_FEASIBLE"
+    assert summary_payload["evaluation"]["exactBaselineTimeLimited"] is True
+    assert summary_payload["evaluation"]["exactBaselineHasIncumbent"] is True
+    assert hybrid_summary["solverModeUsedCounts"]["exact"] == 2
+    assert hybrid_summary["fallbackReasonCounts"]["hybrid warm-start solve failed: numeric issue"] == 2
+    assert hybrid_summary["fallbackToModeCounts"]["exact"] == 2
+    assert hybrid_summary["fallbackCaseIds"] == ["case-00000", "case-00001"]
+    assert hybrid_summary["objectiveGapVsExact"] is not None
+    assert ml_summary["dispatchMAE"] is not None
     assert (Path(tmp_path) / "eval" / "summary.json").exists()
     assert report_path.exists()
+    assert "Hybrid fallback reason distribution" in report_path.read_text(encoding="utf-8")
+
+
+def test_exact_baseline_availability_helpers_cover_time_limit_cases() -> None:
+    exact_time_limit_incumbent = {
+        "adapterMode": "real",
+        "feasible": True,
+        "hasIncumbent": True,
+        "terminatedByTimeLimit": True,
+        "optimal": False,
+    }
+    exact_time_limit_no_incumbent = {
+        "adapterMode": "real",
+        "feasible": False,
+        "hasIncumbent": False,
+        "terminatedByTimeLimit": True,
+        "optimal": False,
+    }
+
+    assert eval_script._exact_baseline_available(exact_time_limit_incumbent) is True
+    assert eval_script._exact_baseline_available(exact_time_limit_no_incumbent) is False
+    assert eval_script._derive_status(exact_time_limit_incumbent) == "TIME_LIMIT_FEASIBLE"
+    assert eval_script._derive_status(exact_time_limit_no_incumbent) == "TIME_LIMIT_NO_INCUMBENT"
+
+
+def test_eval_consistency_checker_accepts_consistent_payload() -> None:
+    records_payload = {
+        "records": [
+            {
+                "caseId": "case-00000",
+                "requestedMode": "exact",
+                "adapterMode": "real",
+                "status": "TIME_LIMIT_FEASIBLE",
+                "feasible": True,
+                "optimal": False,
+                "hasIncumbent": True,
+                "isFallback": False,
+                "objectiveGapVsExact": 0.0,
+            },
+            {
+                "caseId": "case-00000",
+                "requestedMode": "ml",
+                "adapterMode": "real",
+                "status": "FEASIBLE",
+                "feasible": True,
+                "optimal": False,
+                "hasIncumbent": True,
+                "isFallback": False,
+                "objectiveGapVsExact": 0.1,
+            },
+        ]
+    }
+    summary_payload = {
+        "evaluation": {"exactRealBaselineAvailable": True},
+        "modes": [
+            {"requestedMode": "exact", "runCount": 1, "successCount": 1, "failureCount": 0, "fallbackCount": 0},
+            {"requestedMode": "ml", "runCount": 1, "successCount": 1, "failureCount": 0, "fallbackCount": 0},
+        ],
+    }
+
+    issues = consistency_script.check_eval_consistency(records_payload, summary_payload)
+
+    assert issues == []
+
+
+def test_eval_consistency_checker_detects_inconsistent_payload() -> None:
+    records_payload = {
+        "records": [
+            {
+                "caseId": "case-00000",
+                "requestedMode": "exact",
+                "adapterMode": "real",
+                "status": "TIME_LIMIT_FEASIBLE",
+                "feasible": True,
+                "optimal": False,
+                "hasIncumbent": True,
+                "isFallback": False,
+                "objectiveGapVsExact": 0.0,
+            },
+            {
+                "caseId": "case-00000",
+                "requestedMode": "ml",
+                "adapterMode": "real",
+                "status": "FEASIBLE",
+                "feasible": True,
+                "optimal": False,
+                "hasIncumbent": True,
+                "isFallback": False,
+                "objectiveGapVsExact": None,
+            },
+        ]
+    }
+    summary_payload = {
+        "evaluation": {"exactRealBaselineAvailable": False},
+        "modes": [
+            {"requestedMode": "exact", "runCount": 1, "successCount": 0, "failureCount": 1, "fallbackCount": 0},
+            {"requestedMode": "ml", "runCount": 1, "successCount": 1, "failureCount": 0, "fallbackCount": 0},
+        ],
+    }
+
+    issues = consistency_script.check_eval_consistency(records_payload, summary_payload)
+
+    assert any("exact baseline availability mismatch" in issue for issue in issues)

@@ -194,6 +194,30 @@ def normalize_run_payload(payload: Any, scenario_id: str) -> Dict[str, Any]:
     if model_load_status is not None:
         model_load_status = str(model_load_status).strip() or None
 
+    status_name = raw.get("statusName")
+    if status_name is not None:
+        status_name = str(status_name).strip() or None
+
+    status_code = raw.get("statusCode")
+    if status_code is not None:
+        status_code = _to_int(status_code, default=0)
+
+    solution_count = raw.get("solutionCount")
+    if solution_count is not None:
+        solution_count = max(0, _to_int(solution_count, default=0))
+
+    terminated_by_time_limit = raw.get("terminatedByTimeLimit")
+    if terminated_by_time_limit is not None:
+        terminated_by_time_limit = bool(terminated_by_time_limit)
+
+    optimal = raw.get("optimal")
+    if optimal is not None:
+        optimal = bool(optimal)
+
+    has_incumbent = raw.get("hasIncumbent")
+    if has_incumbent is not None:
+        has_incumbent = bool(has_incumbent)
+
     return {
         "runId": run_id,
         "scenarioId": normalized_scenario_id,
@@ -216,4 +240,10 @@ def normalize_run_payload(payload: Any, scenario_id: str) -> Dict[str, Any]:
         "feasible": feasible,
         "modelPath": model_path,
         "modelLoadStatus": model_load_status,
+        "statusName": status_name,
+        "statusCode": status_code,
+        "solutionCount": solution_count,
+        "terminatedByTimeLimit": terminated_by_time_limit,
+        "optimal": optimal,
+        "hasIncumbent": has_incumbent,
     }

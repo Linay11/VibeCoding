@@ -99,6 +99,30 @@ class RunOut(BaseModel):
         default=None,
         description="Model load status such as loaded, bundle_only, failed, or not_requested",
     )
+    statusName: str | None = Field(
+        default=None,
+        description="Underlying solver or inference status name",
+    )
+    statusCode: int | None = Field(
+        default=None,
+        description="Underlying solver status code when available",
+    )
+    solutionCount: int | None = Field(
+        default=None,
+        description="Number of solver solutions or incumbents found when available",
+    )
+    terminatedByTimeLimit: bool | None = Field(
+        default=None,
+        description="Whether the solve terminated because of a time limit",
+    )
+    optimal: bool | None = Field(
+        default=None,
+        description="Whether the returned result is proven optimal",
+    )
+    hasIncumbent: bool | None = Field(
+        default=None,
+        description="Whether the returned result contains an incumbent solution",
+    )
 
 
 class RunCreateRequest(BaseModel):

@@ -161,6 +161,12 @@ def _decorate_payload(
     ml_confidence: float | None = None,
     repair_applied: bool | None = None,
     fallback_reason: str | None = None,
+    status_name: str | None = None,
+    status_code: int | None = None,
+    solution_count: int | None = None,
+    terminated_by_time_limit: bool | None = None,
+    optimal: bool | None = None,
+    has_incumbent: bool | None = None,
 ) -> Dict[str, Any]:
     artifacts = model_artifacts or _base_model_artifacts()
     payload["requestedRunMode"] = requested_run_mode
@@ -175,6 +181,12 @@ def _decorate_payload(
     payload["feasible"] = bool(feasible)
     payload["modelPath"] = artifacts.get("modelPath")
     payload["modelLoadStatus"] = artifacts.get("loadStatus")
+    payload["statusName"] = status_name
+    payload["statusCode"] = status_code
+    payload["solutionCount"] = solution_count
+    payload["terminatedByTimeLimit"] = terminated_by_time_limit
+    payload["optimal"] = optimal
+    payload["hasIncumbent"] = has_incumbent
     return payload
 
 
@@ -247,6 +259,12 @@ def _compat_run_payload(
         feasible=False,
         model_artifacts=artifacts,
         fallback_reason=fallback_reason,
+        status_name="COMPAT",
+        status_code=None,
+        solution_count=0,
+        terminated_by_time_limit=False,
+        optimal=False,
+        has_incumbent=False,
     )
 
 
@@ -339,6 +357,12 @@ def _real_run_payload(
         ml_confidence=ml_confidence,
         repair_applied=repair_applied,
         fallback_reason=fallback_reason,
+        status_name=str(result.get("statusName") or "UNKNOWN"),
+        status_code=int(result.get("statusCode")) if result.get("statusCode") is not None else None,
+        solution_count=int(result.get("solutionCount") or 0),
+        terminated_by_time_limit=bool(result.get("terminatedByTimeLimit", False)),
+        optimal=bool(result.get("optimal", False)),
+        has_incumbent=bool(result.get("hasIncumbent", bool(result.get("feasible", True)))),
     )
 
 
@@ -406,6 +430,12 @@ def _ml_run_payload(
         ml_confidence=float(prediction.get("mlConfidence") or 0.0),
         repair_applied=bool(prediction.get("repairApplied")),
         fallback_reason=fallback_reason,
+        status_name="ML_PREDICTED",
+        status_code=None,
+        solution_count=None,
+        terminated_by_time_limit=False,
+        optimal=False,
+        has_incumbent=bool(prediction.get("feasible")),
     )
 
 
@@ -442,7 +472,9 @@ def _is_real_result(result: Dict[str, Any] | None) -> bool:
         return False
     status = str(result.get("statusName") or "").upper()
     feasible = bool(result.get("feasible", status in {"OPTIMAL", "SUBOPTIMAL"}))
-    return status in {"OPTIMAL", "SUBOPTIMAL"} and feasible
+    has_incumbent = bool(result.get("hasIncumbent", result.get("solutionCount", 0)))
+    optimal = bool(result.get("optimal", status == "OPTIMAL"))
+    return bool(feasible and (optimal or has_incumbent or status in {"OPTIMAL", "SUBOPTIMAL"}))
 
 
 def _predict_with_model(

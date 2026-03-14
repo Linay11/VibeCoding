@@ -124,6 +124,45 @@ def test_power118_service_returns_real_payload_when_solver_succeeds(monkeypatch)
     assert run["modelLoadStatus"] == "not_requested"
 
 
+def test_power118_service_treats_time_limit_with_incumbent_as_real_exact(monkeypatch) -> None:
+    fake_module = SimpleNamespace(
+        check_gurobi_runtime=lambda: {
+            "available": True,
+            "stage": "ready",
+            "reason": "gurobi runtime ready",
+        },
+        load_power118_data=lambda data_path, overrides=None: _preview_payload(),
+        solve_scuc_118=lambda data_path, write_output=False, overrides=None, initial_unit_commitment=None, initial_dispatch=None, time_limit_s=None: {
+            "runtime": {"available": True, "stage": "ready", "reason": "gurobi runtime ready"},
+            "statusCode": 9,
+            "statusName": "TIME_LIMIT",
+            "solutionCount": 1,
+            "terminatedByTimeLimit": True,
+            "optimal": False,
+            "hasIncumbent": True,
+            "feasible": True,
+            "objective": 222.0,
+            "solveTimeMs": 20000.0,
+            "summary": _preview_payload()["summary"],
+            "totalLoadByHour": [100.0, 120.0, 140.0],
+            "topGenerators": [{"label": "Gen 27", "value": 1800.0}],
+            "peakLineFlowByHour": [90.0, 95.0, 91.0],
+        },
+    )
+
+    monkeypatch.setattr(power118_service, "_load_module", lambda: fake_module)
+    monkeypatch.setattr(power118_service, "_power118_data", lambda: Path(__file__))
+
+    run = power118_service.run_power118_once(run_mode="exact")
+
+    assert run["adapterMode"] == "real"
+    assert run["solverModeUsed"] == "exact"
+    assert run["statusName"] == "TIME_LIMIT"
+    assert run["terminatedByTimeLimit"] is True
+    assert run["hasIncumbent"] is True
+    assert run["feasible"] is True
+
+
 def test_power118_service_returns_ml_payload_when_model_prediction_succeeds(monkeypatch) -> None:
     fake_module = SimpleNamespace(
         check_gurobi_runtime=lambda: {

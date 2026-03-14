@@ -30,12 +30,28 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _exact_baseline_available(run: dict[str, Any] | None) -> bool:
+    if not isinstance(run, dict):
+        return False
+    if run.get("adapterMode") != "real":
+        return False
+    if bool(run.get("optimal", False)):
+        return True
+    return bool(run.get("feasible", False) and run.get("hasIncumbent", False))
+
+
 def _derive_status(run: dict[str, Any]) -> str:
     if run.get("adapterMode") == "compat":
         return "COMPAT"
-    if run.get("feasible"):
+    if bool(run.get("optimal", False)):
+        return "OPTIMAL"
+    if bool(run.get("terminatedByTimeLimit", False)) and bool(run.get("hasIncumbent", False)):
+        return "TIME_LIMIT_FEASIBLE"
+    if bool(run.get("terminatedByTimeLimit", False)) and not bool(run.get("hasIncumbent", False)):
+        return "TIME_LIMIT_NO_INCUMBENT"
+    if bool(run.get("feasible", False)):
         return "FEASIBLE"
-    return "INFEASIBLE"
+    return "FAILED"
 
 
 def _gap_vs_exact(objective_value: float | None, exact_objective_value: float | None) -> float | None:
@@ -52,6 +68,8 @@ def _cost_gap(objective_value: float | None, exact_objective_value: float | None
 
 
 def _dispatch_mae(run: dict[str, Any], exact_run: dict[str, Any] | None) -> tuple[float | None, str | None]:
+    if not _exact_baseline_available(exact_run):
+        return None, "exact baseline unavailable"
     if not isinstance(exact_run, dict):
         return None, "exact baseline payload unavailable"
     exact_dispatch = exact_run.get("generatorDispatchByHour")
@@ -69,12 +87,15 @@ def _dispatch_mae(run: dict[str, Any], exact_run: dict[str, Any] | None) -> tupl
 
 
 def build_eval_record(case_id: str, requested_mode: str, run: dict[str, Any], exact_run: dict[str, Any] | None) -> dict[str, Any]:
-    exact_objective_value = exact_run.get("objectiveValue") if isinstance(exact_run, dict) else None
+    exact_available = _exact_baseline_available(exact_run)
+    exact_objective_value = exact_run.get("objectiveValue") if exact_available and isinstance(exact_run, dict) else None
+    exact_runtime_ms = exact_run.get("runtimeMs") if exact_available and isinstance(exact_run, dict) else None
     objective_value = run.get("objectiveValue")
     fallback_reason = run.get("fallbackReason")
     solver_mode_used = run.get("solverModeUsed")
     adapter_mode = run.get("adapterMode")
     is_fallback = bool(fallback_reason) or adapter_mode == "compat" or (solver_mode_used not in {"", requested_mode})
+    fallback_to_mode = solver_mode_used if is_fallback and solver_mode_used not in {"", requested_mode} else None
     dispatch_mae, dispatch_mae_unavailable_reason = _dispatch_mae(run, exact_run)
 
     return {
@@ -83,12 +104,15 @@ def build_eval_record(case_id: str, requested_mode: str, run: dict[str, Any], ex
         "solverModeUsed": solver_mode_used,
         "status": _derive_status(run),
         "adapterMode": adapter_mode,
+        "isRealSolve": adapter_mode == "real",
         "feasible": bool(run.get("feasible", False)),
         "fallbackReason": fallback_reason,
         "isFallback": is_fallback,
+        "fallbackToMode": fallback_to_mode,
         "repairApplied": run.get("repairApplied"),
         "mlConfidence": run.get("mlConfidence"),
         "runtimeMs": run.get("runtimeMs", run.get("metrics", {}).get("solveTimeMs")),
+        "exactRuntimeMs": exact_runtime_ms,
         "objectiveValue": objective_value,
         "objectiveGapVsExact": _gap_vs_exact(objective_value, exact_objective_value),
         "costGap": _cost_gap(objective_value, exact_objective_value),
@@ -97,11 +121,32 @@ def build_eval_record(case_id: str, requested_mode: str, run: dict[str, Any], ex
         "usedModelVersion": run.get("modelVersion"),
         "featureSchemaVersion": run.get("featureSchemaVersion"),
         "modelLoadStatus": run.get("modelLoadStatus"),
+        "statusName": run.get("statusName"),
+        "statusCode": run.get("statusCode"),
+        "solutionCount": run.get("solutionCount"),
+        "terminatedByTimeLimit": run.get("terminatedByTimeLimit"),
+        "hasIncumbent": run.get("hasIncumbent"),
+        "optimal": run.get("optimal"),
+        "exactBaselineAvailable": exact_available,
+        "noSpeedupAgainstExact": bool(
+            exact_available
+            and requested_mode == "hybrid"
+            and run.get("runtimeMs") is not None
+            and exact_runtime_ms is not None
+            and float(run.get("runtimeMs")) >= float(exact_runtime_ms)
+        ),
     }
 
 
 def _status_counts(group: pd.DataFrame) -> dict[str, int]:
     counts = group["status"].value_counts(dropna=False).to_dict()
+    return {str(key): int(value) for key, value in counts.items()}
+
+
+def _reason_counts(group: pd.DataFrame, column_name: str) -> dict[str, int]:
+    normalized = group[column_name].fillna("").astype(str).str.strip()
+    normalized = normalized[normalized != ""]
+    counts = normalized.value_counts(dropna=False).to_dict()
     return {str(key): int(value) for key, value in counts.items()}
 
 
@@ -119,15 +164,29 @@ def summarize_eval_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
         dispatch_mae_values = pd.to_numeric(group["dispatchMAE"], errors="coerce")
         fallback_rate = float(group["isFallback"].astype(bool).mean())
         feasible_rate = float(group["feasible"].astype(bool).mean())
+        success_count = int(group["feasible"].astype(bool).sum())
+        failure_count = int((~group["feasible"].astype(bool)).sum())
+        fallback_reason_counts = _reason_counts(group, "fallbackReason")
+        solver_mode_counts = _reason_counts(group, "solverModeUsed")
+        fallback_to_mode_counts = _reason_counts(group, "fallbackToMode")
+        no_speedup_feasible_count = 0
+        if str(requested_mode) == "hybrid":
+            comparable = group.loc[group["feasible"].astype(bool) & group["noSpeedupAgainstExact"].astype(bool)]
+            no_speedup_feasible_count = int(len(comparable))
+        fallback_case_ids = group.loc[group["isFallback"].astype(bool), "caseId"].astype(str).tolist()
         summary_rows.append(
             {
                 "requestedMode": str(requested_mode),
                 "runCount": int(len(group)),
-                "successCount": int(group["status"].eq("FEASIBLE").sum()),
-                "failureCount": int(group["status"].ne("FEASIBLE").sum()),
+                "successCount": success_count,
+                "failureCount": failure_count,
                 "fallbackCount": int(group["isFallback"].astype(bool).sum()),
                 "compatCount": int(group["adapterMode"].eq("compat").sum()),
                 "statusCounts": _status_counts(group),
+                "solverModeUsedCounts": solver_mode_counts,
+                "fallbackReasonCounts": fallback_reason_counts,
+                "fallbackToModeCounts": fallback_to_mode_counts,
+                "fallbackCaseIds": fallback_case_ids,
                 "fallbackRate": fallback_rate,
                 "feasibilityRate": feasible_rate,
                 "averageRuntimeMs": float(runtime_values.mean()) if runtime_values.notna().any() else None,
@@ -137,6 +196,8 @@ def summarize_eval_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
                 "dispatchMAEUnavailableReason": None
                 if dispatch_mae_values.notna().any()
                 else "dispatch outputs unavailable for at least one compared mode or exact baseline",
+                "exactFallbackCount": int(group["solverModeUsed"].fillna("").eq("exact").sum()) if str(requested_mode) == "hybrid" else 0,
+                "noSpeedupFeasibleCount": no_speedup_feasible_count if str(requested_mode) == "hybrid" else 0,
             }
         )
     return summary_rows
@@ -146,6 +207,9 @@ def _summary_payload(
     records: list[dict[str, Any]],
     summary_rows: list[dict[str, Any]],
     exact_real_available: bool,
+    exact_baseline_status: str | None,
+    exact_baseline_time_limited: bool,
+    exact_baseline_has_incumbent: bool,
     model_artifacts: dict[str, Any],
     requested_modes: list[str],
     output_dir: Path,
@@ -156,6 +220,9 @@ def _summary_payload(
             "caseCount": int(len({record["caseId"] for record in records})),
             "requestedModes": requested_modes,
             "exactRealBaselineAvailable": bool(exact_real_available),
+            "exactBaselineStatus": exact_baseline_status,
+            "exactBaselineTimeLimited": bool(exact_baseline_time_limited),
+            "exactBaselineHasIncumbent": bool(exact_baseline_has_incumbent),
             "modelLoaded": bool(model_artifacts.get("loadSuccess")),
             "modelPath": model_artifacts.get("modelPath"),
             "metadataPath": model_artifacts.get("metadataPath"),
@@ -208,6 +275,9 @@ def _write_report(
         f"- Feature schema version: `{evaluation['featureSchemaVersion']}`",
         f"- Model load status: `{evaluation['modelLoadStatus']}`",
         f"- Exact real baseline available: `{evaluation['exactRealBaselineAvailable']}`",
+        f"- Exact baseline status: `{evaluation['exactBaselineStatus']}`",
+        f"- Exact baseline time-limited: `{evaluation['exactBaselineTimeLimited']}`",
+        f"- Exact baseline has incumbent: `{evaluation['exactBaselineHasIncumbent']}`",
         "",
         "## Mode Summary",
         _markdown_table(summary_rows),
@@ -227,6 +297,33 @@ def _write_report(
             "- `compat` rows indicate that the backend did not complete a real exact or hybrid solve for that case.",
             "- `dispatchMAE` stays unavailable when dispatch outputs are missing or when no exact baseline dispatch is available.",
             "",
+            "## Hybrid Fallback Detail",
+        ]
+    )
+    hybrid_rows = [row for row in summary_rows if row["requestedMode"] == "hybrid"]
+    if hybrid_rows:
+        hybrid_row = hybrid_rows[0]
+        report_lines.extend(
+            [
+                f"- Hybrid fallback count: `{hybrid_row['fallbackCount']}`",
+                f"- Hybrid fallback reason distribution: `{hybrid_row['fallbackReasonCounts']}`",
+                f"- Hybrid fallback-to-mode distribution: `{hybrid_row['fallbackToModeCounts']}`",
+                f"- Hybrid solver mode distribution: `{hybrid_row['solverModeUsedCounts']}`",
+                f"- Hybrid fallback caseIds: `{hybrid_row['fallbackCaseIds']}`",
+                f"- Hybrid cases that ended up using exact: `{hybrid_row['exactFallbackCount']}`",
+                f"- Hybrid feasible cases with no demonstrated speedup signal: `{hybrid_row['noSpeedupFeasibleCount']}`",
+                "",
+            ]
+        )
+    else:
+        report_lines.extend(
+            [
+                "- Hybrid mode was not requested in this evaluation run.",
+                "",
+            ]
+        )
+    report_lines.extend(
+        [
             "## Artifact Index",
             f"- JSON records: `{RECORDS_JSON_NAME}`",
             f"- CSV records: `{RECORDS_CSV_NAME}`",
@@ -246,6 +343,9 @@ def print_summary(summary_payload: dict[str, Any], summary_rows: list[dict[str, 
     print(f"- Model loaded: {'YES' if evaluation['modelLoaded'] else 'NO'}")
     print(f"- Model path: {evaluation['modelPath']}")
     print(f"- Exact real baseline available: {'YES' if evaluation['exactRealBaselineAvailable'] else 'NO'}")
+    print(f"- Exact baseline status: {evaluation['exactBaselineStatus']}")
+    print(f"- Exact baseline time-limited: {'YES' if evaluation['exactBaselineTimeLimited'] else 'NO'}")
+    print(f"- Exact baseline has incumbent: {'YES' if evaluation['exactBaselineHasIncumbent'] else 'NO'}")
     for row in summary_rows:
         print(
             "- "
@@ -257,6 +357,10 @@ def print_summary(summary_payload: dict[str, Any], summary_rows: list[dict[str, 
             f"avgRuntimeMs={row['averageRuntimeMs'] if row['averageRuntimeMs'] is not None else 'NA'} "
             f"gapVsExact={row['objectiveGapVsExact'] if row['objectiveGapVsExact'] is not None else 'NA'}"
         )
+        if row["requestedMode"] == "hybrid":
+            print(f"  fallbackReasonCounts={row['fallbackReasonCounts']}")
+            print(f"  fallbackToModeCounts={row['fallbackToModeCounts']}")
+            print(f"  solverModeUsedCounts={row['solverModeUsedCounts']}")
     if not evaluation["exactRealBaselineAvailable"]:
         print("- Exact baseline was not a real feasible solve in this environment, so objective-gap metrics remain unavailable.")
     if evaluation.get("modelLoadFailureReason"):
@@ -282,6 +386,9 @@ def evaluate_modes(
     model_artifacts = load_power118_model_artifacts(model_path=model_path, metadata_path=metadata_path)
     records: list[dict[str, Any]] = []
     exact_real_available = False
+    exact_baseline_status = None
+    exact_baseline_time_limited = False
+    exact_baseline_has_incumbent = False
 
     for case in cases[:num_cases]:
         exact_run = run_power118_once(
@@ -292,9 +399,12 @@ def evaluate_modes(
             model_path=model_path,
             metadata_path=metadata_path,
         )
-        exact_real_available = exact_real_available or (
-            exact_run.get("adapterMode") == "real" and bool(exact_run.get("feasible"))
-        )
+        baseline_available = _exact_baseline_available(exact_run)
+        exact_real_available = exact_real_available or baseline_available
+        if exact_baseline_status is None:
+            exact_baseline_status = _derive_status(exact_run)
+            exact_baseline_time_limited = bool(exact_run.get("terminatedByTimeLimit", False))
+            exact_baseline_has_incumbent = bool(exact_run.get("hasIncumbent", False))
 
         for requested_mode in modes:
             run = exact_run if requested_mode == "exact" else run_power118_once(
@@ -320,6 +430,9 @@ def evaluate_modes(
         records=records,
         summary_rows=summary_rows,
         exact_real_available=exact_real_available,
+        exact_baseline_status=exact_baseline_status,
+        exact_baseline_time_limited=exact_baseline_time_limited,
+        exact_baseline_has_incumbent=exact_baseline_has_incumbent,
         model_artifacts=model_artifacts,
         requested_modes=modes,
         output_dir=output_dir,
