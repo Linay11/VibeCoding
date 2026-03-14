@@ -14,6 +14,11 @@ export const mockScenarios = [
     name: 'Obstacle Avoidance',
     description: 'Path planning optimization with obstacle-bound geometric constraints.',
   },
+  {
+    id: 'power-118',
+    name: 'Power 118 SCUC',
+    description: 'IEEE 118-bus SCUC scenario with generator commitment and dispatch outputs.',
+  },
 ]
 
 function randomInRange(min, max) {
@@ -45,6 +50,7 @@ export function buildMockRun(scenarioId) {
     runId: `run-${scenarioId}-${Date.now()}`,
     scenarioId,
     generatedAt: new Date().toISOString(),
+    requestedRunMode: 'exact',
     metrics: {
       solveTimeMs,
       infeasibilityRate,
@@ -53,5 +59,16 @@ export function buildMockRun(scenarioId) {
     trend,
     comparison: strategies.map((item) => ({ label: item.name, value: item.cost })),
     strategies,
+    solverModeUsed: 'exact',
+    mlConfidence: null,
+    repairApplied: null,
+    fallbackReason: null,
+    modelVersion: null,
+    featureSchemaVersion: null,
+    runtimeMs: solveTimeMs,
+    objectiveValue: strategies[0].cost,
+    feasible: strategies.every((item) => item.feasible),
+    modelPath: null,
+    modelLoadStatus: 'not_requested',
   }
 }

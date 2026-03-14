@@ -1,10 +1,11 @@
 {
   "power-118": {
-    "runId": "run-power-118-20260311083238683719",
+    "runId": "run-power-118-20260314030134170222",
     "scenarioId": "power-118",
-    "generatedAt": "2026-03-11T08:32:38.683736+00:00",
+    "generatedAt": "2026-03-14T03:01:34.170251+00:00",
+    "requestedRunMode": "ml",
     "metrics": {
-      "solveTimeMs": 349.0570999992997,
+      "solveTimeMs": 55.182200001581805,
       "infeasibilityRate": 0.0,
       "suboptimality": 0.0
     },
@@ -126,6 +127,17 @@
       }
     ],
     "adapterMode": "compat",
-    "adapterNote": "power-118 compat mode: runtime blocked at import: gurobipy import failed: No module named 'gurobipy'. trend is mapped from real hourly load totals in 118_data.xls. comparison is mapped from generator Pmax preview because solved dispatch is unavailable. metrics other than solveTimeMs are temporary compatibility placeholders. Workbook=external/power118/118_data.xls. Script=external/power118/SCUC_118_new.py. peakLoad=6109.99997556."
+    "adapterNote": "power-118 compat mode: model artifact not found: C:\\D盘\\VibeCoding\\backend_adapter\\data\\power118_ml_model.joblib. trend is mapped from real hourly load totals in 118_data.xls. comparison is mapped from generator Pmax preview because solved dispatch is unavailable. metrics other than solveTimeMs are temporary compatibility placeholders. Workbook=external/power118/118_data.xls. Script=external/power118/SCUC_118_new.py. modelPath=C:\\D盘\\VibeCoding\\backend_adapter\\data\\power118_ml_model.joblib. modelLoadStatus=failed. modelLoadFailure=model artifact not found: C:\\D盘\\VibeCoding\\backend_adapter\\data\\power118_ml_model.joblib. peakLoad=6109.99997556. fallbackReason=model artifact not found: C:\\D盘\\VibeCoding\\backend_adapter\\data\\power118_ml_model.joblib.",
+    "solverModeUsed": "ml",
+    "mlConfidence": null,
+    "repairApplied": null,
+    "fallbackReason": "model artifact not found: C:\\D盘\\VibeCoding\\backend_adapter\\data\\power118_ml_model.joblib",
+    "modelVersion": null,
+    "featureSchemaVersion": null,
+    "runtimeMs": 55.182200001581805,
+    "objectiveValue": null,
+    "feasible": false,
+    "modelPath": "C:\\D盘\\VibeCoding\\backend_adapter\\data\\power118_ml_model.joblib",
+    "modelLoadStatus": "failed"
   }
 }

@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import copy
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -26,6 +27,113 @@ def _status_name(grb_module: Any, status_code: int) -> str:
         grb_module.TIME_LIMIT: "TIME_LIMIT",
     }
     return status_map.get(status_code, f"STATUS_{status_code}")
+
+
+def _coerce_hourly_scale(scale_value: Any, horizon: int) -> list[float]:
+    if isinstance(scale_value, (int, float)):
+        return [float(scale_value)] * horizon
+    if isinstance(scale_value, list) and len(scale_value) == horizon:
+        return [float(value) for value in scale_value]
+    raise ValueError(f"hourlyLoadScale must be a scalar or a list of length {horizon}")
+
+
+def _coerce_generator_scale(
+    scale_value: Any,
+    generators: list[dict[str, Any]],
+    field_name: str,
+) -> dict[int, float]:
+    if scale_value is None:
+        return {}
+    if isinstance(scale_value, (int, float)):
+        return {int(generator["genId"]): float(scale_value) for generator in generators}
+    if isinstance(scale_value, list):
+        if len(scale_value) != len(generators):
+            raise ValueError(f"{field_name} list length must match number of generators")
+        return {
+            int(generator["genId"]): float(scale_value[index])
+            for index, generator in enumerate(generators)
+        }
+    if isinstance(scale_value, dict):
+        return {int(key): float(value) for key, value in scale_value.items()}
+    raise ValueError(f"{field_name} must be a scalar, list, or dict keyed by genId")
+
+
+def _rebuild_data_summary(data: dict[str, Any]) -> dict[str, Any]:
+    total_load_by_hour = [float(sum(hour_values)) for hour_values in data["loadAtBus"]]
+    generator_capacity_preview = sorted(
+        [
+            {
+                "label": f"Gen {generator['genId']}",
+                "value": float(generator["pMax"]),
+            }
+            for generator in data["generators"]
+        ],
+        key=lambda item: item["value"],
+        reverse=True,
+    )
+    data["summary"] = {
+        "numBus": len(data["bus"]),
+        "numLine": len(data["branches"]),
+        "numGen": len(data["generators"]),
+        "numLoad": len(data["loadRows"]),
+        "peakLoad": float(max(total_load_by_hour) if total_load_by_hour else 0.0),
+        "totalDailyLoad": float(sum(total_load_by_hour)),
+    }
+    data["totalLoadByHour"] = total_load_by_hour
+    data["generatorCapacityPreview"] = generator_capacity_preview
+    return data
+
+
+def _apply_overrides(
+    data: dict[str, Any],
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not overrides:
+        return data
+
+    adjusted = copy.deepcopy(data)
+    horizon = int(adjusted["timeHorizon"])
+    generators = adjusted["generators"]
+
+    hourly_scale = overrides.get("hourlyLoadScale")
+    if hourly_scale is not None:
+        scales = _coerce_hourly_scale(hourly_scale, horizon)
+        for hour in range(horizon):
+            adjusted["loadAtBus"][hour] = [float(value) * scales[hour] for value in adjusted["loadAtBus"][hour]]
+        for load_row in adjusted["loadRows"]:
+            for hour in range(horizon):
+                load_row[2 + hour] = float(load_row[2 + hour]) * scales[hour]
+
+    pmax_scale_by_generator = _coerce_generator_scale(
+        overrides.get("generatorPMaxScale"),
+        generators,
+        "generatorPMaxScale",
+    )
+    cost_scale_by_generator = _coerce_generator_scale(
+        overrides.get("generatorCostScale"),
+        generators,
+        "generatorCostScale",
+    )
+
+    for generator_index, generator in enumerate(generators):
+        gen_id = int(generator["genId"])
+        if gen_id in pmax_scale_by_generator:
+            scale = max(0.0, float(pmax_scale_by_generator[gen_id]))
+            generator["pMax"] = float(generator["pMax"]) * scale
+            generator["pMin"] = min(float(generator["pMin"]), float(generator["pMax"]))
+            adjusted["genRows"][generator_index][2] = generator["pMin"]
+            adjusted["genRows"][generator_index][3] = generator["pMax"]
+
+        if gen_id in cost_scale_by_generator:
+            scale = max(0.0, float(cost_scale_by_generator[gen_id]))
+            generator["a2"] = float(generator["a2"]) * scale
+            generator["a1"] = float(generator["a1"]) * scale
+            generator["a0"] = float(generator["a0"]) * scale
+            adjusted["genRows"][generator_index][4] = generator["a2"]
+            adjusted["genRows"][generator_index][5] = generator["a1"]
+            adjusted["genRows"][generator_index][6] = generator["a0"]
+
+    return _rebuild_data_summary(adjusted)
 
 
 def check_gurobi_runtime() -> dict[str, Any]:
@@ -59,7 +167,10 @@ def check_gurobi_runtime() -> dict[str, Any]:
     }
 
 
-def load_power118_data(data_path: str | Path | None = None) -> dict[str, Any]:
+def load_power118_data(
+    data_path: str | Path | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     import pandas as pd
 
     resolved_data_path = Path(data_path or DEFAULT_DATA_FILE).resolve()
@@ -125,20 +236,7 @@ def load_power118_data(data_path: str | Path | None = None) -> dict[str, Any]:
             }
         )
 
-    total_load_by_hour = [float(sum(hour_values)) for hour_values in load_at_bus]
-    generator_capacity_preview = sorted(
-        [
-            {
-                "label": f"Gen {generator['genId']}",
-                "value": float(generator["pMax"]),
-            }
-            for generator in generators
-        ],
-        key=lambda item: item["value"],
-        reverse=True,
-    )
-
-    return {
+    data = {
         "dataPath": str(resolved_data_path),
         "timeHorizon": T,
         "bus": bus,
@@ -154,18 +252,24 @@ def load_power118_data(data_path: str | Path | None = None) -> dict[str, Any]:
             "numLine": num_line,
             "numGen": num_gen,
             "numLoad": num_load,
-            "peakLoad": float(max(total_load_by_hour) if total_load_by_hour else 0.0),
-            "totalDailyLoad": float(sum(total_load_by_hour)),
+            "peakLoad": 0.0,
+            "totalDailyLoad": 0.0,
         },
-        "totalLoadByHour": total_load_by_hour,
-        "generatorCapacityPreview": generator_capacity_preview,
+        "totalLoadByHour": [],
+        "generatorCapacityPreview": [],
     }
+    return _apply_overrides(_rebuild_data_summary(data), overrides=overrides)
 
 
 def solve_scuc_118(
     data_path: str | Path | None = None,
     output_path: str | Path | None = None,
     write_output: bool = False,
+    overrides: dict[str, Any] | None = None,
+    initial_unit_commitment: list[list[float]] | None = None,
+    initial_dispatch: list[list[float]] | None = None,
+    time_limit_s: float | None = None,
+    fixed_unit_commitment: bool = False,
 ) -> dict[str, Any]:
     import pandas as pd
 
@@ -176,7 +280,7 @@ def solve_scuc_118(
     import gurobipy as gp
     from gurobipy import GRB
 
-    data = load_power118_data(data_path)
+    data = load_power118_data(data_path, overrides=overrides)
     T = data["timeHorizon"]
     num_bus = data["summary"]["numBus"]
     num_line = data["summary"]["numLine"]
@@ -203,6 +307,25 @@ def solve_scuc_118(
             objective.add(svar[g, hour], generator["startCost"])
             objective.add(dvar[g, hour], generator["shutCost"])
     model.setObjective(objective, GRB.MINIMIZE)
+
+    if initial_unit_commitment is not None:
+        if len(initial_unit_commitment) != num_gen or any(len(row) != T for row in initial_unit_commitment):
+            raise ValueError("initial_unit_commitment must match shape [num_gen][time_horizon]")
+        for g in range(num_gen):
+            for hour in range(T):
+                commitment_value = float(round(initial_unit_commitment[g][hour]))
+                u[g, hour].Start = commitment_value
+                if fixed_unit_commitment:
+                    model.addConstr(u[g, hour] == commitment_value, name=f"fixedU_{g}_{hour}")
+
+    if initial_dispatch is not None:
+        if len(initial_dispatch) != num_gen or any(len(row) != T for row in initial_dispatch):
+            raise ValueError("initial_dispatch must match shape [num_gen][time_horizon]")
+        for g, generator in enumerate(generators):
+            for hour in range(T):
+                dispatch_value = float(initial_dispatch[g][hour])
+                dispatch_value = max(0.0, min(dispatch_value, float(generator["pMax"])))
+                P[g, hour].Start = dispatch_value
 
     for g, generator in enumerate(generators):
         for hour in range(T):
@@ -270,6 +393,8 @@ def solve_scuc_118(
         model.addConstr(theta[0, hour] == 0, name=f"refAngle_{hour}")
 
     model.setParam("MIPGap", 1e-4)
+    if time_limit_s is not None:
+        model.setParam("TimeLimit", max(0.0, float(time_limit_s)))
     solve_start = perf_counter()
     model.optimize()
     solve_time_ms = (perf_counter() - solve_start) * 1000.0
@@ -346,6 +471,9 @@ def solve_scuc_118(
         "unitCommitmentByHour": unit_commitment_by_hour,
         "lineFlowByHour": line_flow_by_hour,
         "busAngleByHour": bus_angle_by_hour,
+        "warmStartUsed": initial_unit_commitment is not None or initial_dispatch is not None,
+        "fixedUnitCommitment": fixed_unit_commitment,
+        "timeLimitS": float(time_limit_s) if time_limit_s is not None else None,
     }
 
 

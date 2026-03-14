@@ -78,13 +78,22 @@ def _build_app() -> FastAPI:
     @app.post("/api/runs", response_model=RunResponse)
     async def post_api_runs(req: RunCreateRequest) -> Any:
         scenario_id = (req.scenarioId or "").strip()
+        run_mode = (req.runMode or "exact").strip().lower()
         if not scenario_id:
             raise APIError(400, "INVALID_ARGUMENT", "scenarioId is required")
 
         if get_scenario(scenario_id) is None:
             raise APIError(400, "INVALID_ARGUMENT", f"unknown scenarioId: {scenario_id}")
 
-        run_payload = run_scenario_once(scenario_id)
+        if run_mode not in {"exact", "hybrid", "ml"}:
+            raise APIError(400, "INVALID_ARGUMENT", f"unsupported runMode: {run_mode}")
+
+        run_payload = run_scenario_once(
+            scenario_id,
+            run_mode=run_mode,
+            time_limit_ms=req.timeLimitMs,
+            fallback_to_exact=req.fallbackToExact,
+        )
         if not isinstance(run_payload, dict):
             raise APIError(500, "RUN_FAILED", "runner did not return a valid payload")
 

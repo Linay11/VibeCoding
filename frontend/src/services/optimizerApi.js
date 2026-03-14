@@ -128,11 +128,28 @@ function normalizeRun(payload, scenarioId, modeOverride = null, noteOverride = '
     runId: raw.runId ?? raw.id ?? `run-${scenarioId}-${Date.now()}`,
     scenarioId: raw.scenarioId ?? scenarioId,
     generatedAt: raw.generatedAt ?? new Date().toISOString(),
+    requestedRunMode: raw.requestedRunMode ?? null,
     metrics,
     strategies: normalizedStrategies,
     trend: normalizedTrend,
     comparison: normalizedComparison,
     adapterMode,
+    solverModeUsed: raw.solverModeUsed ?? '',
+    mlConfidence: raw.mlConfidence ?? null,
+    repairApplied: raw.repairApplied ?? null,
+    fallbackReason: raw.fallbackReason ?? null,
+    modelVersion: raw.modelVersion ?? null,
+    featureSchemaVersion: raw.featureSchemaVersion ?? null,
+    runtimeMs: Math.max(0, toNumber(raw.runtimeMs ?? raw.metrics?.solveTimeMs ?? 0, 0)),
+    objectiveValue:
+      raw.objectiveValue != null
+        ? toNumber(raw.objectiveValue, 0)
+        : normalizedStrategies[0]
+          ? normalizedStrategies[0].cost
+          : null,
+    feasible: raw.feasible != null ? Boolean(raw.feasible) : normalizedStrategies.some((row) => row.feasible),
+    modelPath: raw.modelPath ?? null,
+    modelLoadStatus: raw.modelLoadStatus ?? null,
     adapterNote:
       adapterNote ||
       (adapterMode === 'real'
@@ -257,11 +274,11 @@ export async function getLatestRun(scenarioId) {
   }
 }
 
-export async function runExperiment({ scenarioId }) {
+export async function runExperiment({ scenarioId, runMode = 'exact', timeLimitMs = null, fallbackToExact = true }) {
   try {
     const payload = await requestJson('/api/runs', {
       method: 'POST',
-      body: JSON.stringify({ scenarioId }),
+      body: JSON.stringify({ scenarioId, runMode, timeLimitMs, fallbackToExact }),
     })
     const normalized = normalizeRun(payload, scenarioId)
     if (!normalized) {

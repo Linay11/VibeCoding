@@ -17,6 +17,7 @@ function buildRunPayload({
   noticeTone = 'info',
   errorType = 'none',
   generatedAt = '2026-03-10T10:00:00.000Z',
+  data = {},
 } = {}) {
   return {
     source,
@@ -29,6 +30,7 @@ function buildRunPayload({
       runId: `run-portfolio-${mode}`,
       scenarioId: 'portfolio',
       generatedAt,
+      requestedRunMode: 'exact',
       metrics: {
         solveTimeMs: 36.4,
         infeasibilityRate: 0.01,
@@ -47,6 +49,17 @@ function buildRunPayload({
       comparison: [{ label: 'AdapterBaseline', value: 8.2 }],
       adapterMode: mode,
       adapterNote: note,
+      solverModeUsed: 'exact',
+      mlConfidence: null,
+      repairApplied: null,
+      fallbackReason: null,
+      modelVersion: null,
+      featureSchemaVersion: null,
+      runtimeMs: 36.4,
+      objectiveValue: 8.2,
+      feasible: true,
+      modelLoadStatus: 'not_requested',
+      ...data,
     },
   }
 }
@@ -122,7 +135,7 @@ describe('WorkbenchPage smoke tests', () => {
     expect(scoped.getByText('Compat run')).toBeInTheDocument()
 
     // The same mode reason should appear both in summary and state panel.
-    const reasonMatches = await screen.findAllByText(compatReason)
+    const reasonMatches = await screen.findAllByText((content) => content.includes(compatReason))
     expect(reasonMatches.length).toBeGreaterThanOrEqual(2)
 
     expect(screen.getByText('Backend compatibility mode')).toBeInTheDocument()
@@ -149,7 +162,7 @@ describe('WorkbenchPage smoke tests', () => {
     fireEvent.click(runButton)
 
     await waitFor(() => {
-      expect(runExperiment).toHaveBeenCalledWith({ scenarioId: 'portfolio' })
+      expect(runExperiment).toHaveBeenCalledWith({ scenarioId: 'portfolio', runMode: 'exact' })
     })
 
     expect(screen.getByRole('button', { name: 'Running...' })).toBeDisabled()
@@ -210,10 +223,10 @@ describe('WorkbenchPage smoke tests', () => {
     const scoped = within(summary)
     expect(scoped.getByText('Frontend fallback')).toBeInTheDocument()
     expect(scoped.getByText('Fallback demo')).toBeInTheDocument()
-    expect(scoped.getByText(noLatestReason)).toBeInTheDocument()
+    expect(scoped.getByText((content) => content.includes(noLatestReason))).toBeInTheDocument()
 
     expect(screen.getByText('Frontend fallback mode')).toBeInTheDocument()
-    expect(screen.getAllByText(noLatestReason).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText((content) => content.includes(noLatestReason)).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText(noLatestNotice)).toBeInTheDocument()
   })
 
@@ -256,10 +269,10 @@ describe('WorkbenchPage smoke tests', () => {
     const scoped = within(summary)
     expect(scoped.getByText('Frontend fallback')).toBeInTheDocument()
     expect(scoped.getByText('Fallback demo')).toBeInTheDocument()
-    expect(scoped.getByText(networkReason)).toBeInTheDocument()
+    expect(scoped.getByText((content) => content.includes(networkReason))).toBeInTheDocument()
 
     expect(screen.getByText('Frontend fallback mode')).toBeInTheDocument()
-    expect(screen.getAllByText(networkReason).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText((content) => content.includes(networkReason)).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText(networkNotice)).toBeInTheDocument()
   })
 
@@ -375,8 +388,8 @@ describe('WorkbenchPage smoke tests', () => {
             note: 'Control compat run due to optional dependency gap.',
             generatedAt: 'generated-control',
             data: {
-              ...buildRunPayload().data,
               scenarioId: 'control',
+              generatedAt: 'generated-control',
             },
           }),
         )
@@ -404,7 +417,7 @@ describe('WorkbenchPage smoke tests', () => {
     expect(within(switchedSummary).getByText('Control Setcover')).toBeInTheDocument()
     expect(screen.getByText('Compat run')).toBeInTheDocument()
     expect(screen.getByText('Backend compatibility mode')).toBeInTheDocument()
-    expect(screen.getAllByText('Control compat run due to optional dependency gap.').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText((content) => content.includes('Control compat run due to optional dependency gap.')).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText('generated-control')).toBeInTheDocument()
   })
 
@@ -482,11 +495,58 @@ describe('WorkbenchPage smoke tests', () => {
     const scoped = within(finalSummary)
     expect(scoped.getByText('Control Setcover')).toBeInTheDocument()
     expect(scoped.getByText('Compat run')).toBeInTheDocument()
-    expect(scoped.getByText(controlReason)).toBeInTheDocument()
+    expect(scoped.getByText((content) => content.includes(controlReason))).toBeInTheDocument()
     expect(scoped.getByText('generated-control-fast')).toBeInTheDocument()
     expect(screen.getByText('Backend compatibility mode')).toBeInTheDocument()
     expect(screen.queryByText('generated-portfolio-late')).not.toBeInTheDocument()
     expect(screen.queryByText(latePortfolioReason)).not.toBeInTheDocument()
     expect(screen.queryByText('Backend real execution')).not.toBeInTheDocument()
+  })
+
+  it('shows requested versus actual mode and diagnostics for power-118', async () => {
+    getScenarios.mockResolvedValueOnce({
+      source: 'api',
+      data: [
+        {
+          id: 'power-118',
+          name: 'Power 118 SCUC',
+          description: 'Power scenario for smoke test',
+        },
+      ],
+      notice: '',
+      noticeTone: 'info',
+    })
+    getLatestRun.mockResolvedValueOnce(
+      buildRunPayload({
+        mode: 'real',
+        note: 'Power118 hybrid requested and exact fallback used.',
+        data: {
+          scenarioId: 'power-118',
+          requestedRunMode: 'ml',
+          solverModeUsed: 'exact',
+          fallbackReason: 'ml model unavailable: artifact missing',
+          modelVersion: 'power118-baseline-v1',
+          featureSchemaVersion: 'power118-feature-schema-v1',
+          mlConfidence: 0.74,
+          repairApplied: true,
+          runtimeMs: 128.0,
+          objectiveValue: 456.7,
+          feasible: true,
+          modelLoadStatus: 'failed',
+        },
+      }),
+    )
+
+    render(<WorkbenchPage />)
+
+    await waitFor(() => {
+      expect(getLatestRun).toHaveBeenCalledWith('power-118')
+    })
+
+    expect(screen.getByLabelText('Power 118 diagnostics')).toBeInTheDocument()
+    expect(screen.getByText('Requested mode: ml')).toBeInTheDocument()
+    expect(screen.getByText('Actual mode: exact')).toBeInTheDocument()
+    expect(screen.getByText('Fallback reason: ml model unavailable: artifact missing')).toBeInTheDocument()
+    expect(screen.getByText(/Requested ml, used exact/i)).toBeInTheDocument()
   })
 })

@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import joblib
+import numpy as np
+
+from backend_adapter.services.power118_dataset import build_power118_feature_record, build_power118_target_record
+from backend_adapter.services.power118_ml_model import (
+    build_power118_metadata,
+    load_power118_model_artifacts,
+    predict_power118_schedule,
+    write_power118_metadata_file,
+    validate_power118_feature_schema,
+)
+from scripts.eval_power118_modes import build_eval_record, summarize_eval_records
+
+
+class _DummyModel:
+    def __init__(self, output_vector):
+        self._output_vector = np.asarray(output_vector, dtype=float)
+
+    def predict(self, X):
+        return np.repeat(self._output_vector.reshape(1, -1), repeats=len(X), axis=0)
+
+
+def _power_data() -> dict:
+    generators = []
+    for gen_id in range(1, 3):
+        generators.append(
+            {
+                "genId": gen_id,
+                "busIndex": gen_id - 1,
+                "pMin": 10.0,
+                "pMax": 100.0,
+                "a2": 0.01,
+                "a1": 2.0,
+                "a0": 5.0,
+                "rampUp": 50.0,
+                "rampDown": 50.0,
+                "startCost": 30.0,
+                "shutCost": 0.0,
+                "minUpTime": 1,
+                "minDownTime": 1,
+            }
+        )
+
+    return {
+        "dataPath": "dummy.xls",
+        "timeHorizon": 3,
+        "bus": [1, 2],
+        "branches": [{"capacity": 100.0, "x": 0.1}, {"capacity": 150.0, "x": 0.2}],
+        "loadRows": [[1, 1, 30.0, 35.0, 32.0], [2, 2, 20.0, 22.0, 21.0]],
+        "loadAtBus": [[30.0, 20.0], [35.0, 22.0], [32.0, 21.0]],
+        "generators": generators,
+        "summary": {"numBus": 2, "numLine": 2, "numGen": 2, "numLoad": 2, "peakLoad": 57.0, "totalDailyLoad": 160.0},
+        "totalLoadByHour": [50.0, 57.0, 53.0],
+        "generatorCapacityPreview": [{"label": "Gen 1", "value": 100.0}, {"label": "Gen 2", "value": 100.0}],
+    }
+
+
+def test_build_power118_feature_record_contains_hourly_and_generator_features() -> None:
+    record = build_power118_feature_record(_power_data())
+
+    assert record["peakLoad"] == 57.0
+    assert record["hourlyLoad_1"] == 50.0
+    assert record["hourlyLoad_3"] == 53.0
+    assert record["gen1_pMax"] == 100.0
+    assert record["gen2_startCost"] == 30.0
+
+
+def test_build_power118_target_record_flattens_commitment_and_dispatch() -> None:
+    target = build_power118_target_record(
+        {
+            "objective": 123.0,
+            "solveTimeMs": 9.0,
+            "feasible": True,
+            "unitCommitmentByHour": [[1.0, 0.0, 1.0], [0.0, 1.0, 1.0]],
+            "generatorDispatchByHour": [[20.0, 0.0, 30.0], [0.0, 25.0, 23.0]],
+        }
+    )
+
+    assert target["objective"] == 123.0
+    assert target["unitCommitment_g1_h1"] == 1.0
+    assert target["unitCommitment_g2_h2"] == 1.0
+    assert target["dispatch_g2_h3"] == 23.0
+
+
+def test_predict_power118_schedule_repairs_and_scores_prediction() -> None:
+    power_data = _power_data()
+    feature_record = build_power118_feature_record(power_data)
+    feature_columns = list(feature_record.keys())
+    commitment_output = [1.0, 1.0, 1.0, 0.0, 1.0, 0.0]
+    dispatch_output = [25.0, 25.0, 25.0, 15.0, 15.0, 15.0]
+    model_bundle = {
+        "feature_columns": feature_columns,
+        "metrics": {"commitment_train_r2": 0.7, "dispatch_train_r2": 0.6},
+        "commitment_model": _DummyModel(commitment_output),
+        "dispatch_model": _DummyModel(dispatch_output),
+    }
+
+    metadata = build_power118_metadata(feature_columns, ["target-a"], train_sample_count=12)
+    prediction = predict_power118_schedule(power_data, model_bundle, metadata=metadata)
+
+    assert prediction["feasible"] is True
+    assert prediction["mlConfidence"] > 0.0
+    assert len(prediction["unitCommitmentByHour"]) == 2
+    assert len(prediction["unitCommitmentByHour"][0]) == 3
+    assert prediction["objective"] > 0.0
+    assert prediction["modelVersion"] == metadata["modelVersion"]
+    assert prediction["featureSchemaVersion"] == metadata["featureSchemaVersion"]
+
+
+def test_validate_power118_feature_schema_reports_mismatch() -> None:
+    power_data = _power_data()
+    feature_record = build_power118_feature_record(power_data)
+    expected_feature_names = list(feature_record.keys())[:-1]
+
+    feature_array, schema_error = validate_power118_feature_schema(power_data, expected_feature_names)
+
+    assert feature_array is None
+    assert schema_error is not None
+    assert "feature schema mismatch" in schema_error
+
+
+def test_eval_helpers_build_records_and_summary() -> None:
+    exact_run = {
+        "adapterMode": "real",
+        "solverModeUsed": "exact",
+        "feasible": True,
+        "runtimeMs": 100.0,
+        "objectiveValue": 50.0,
+        "fallbackReason": None,
+        "repairApplied": None,
+        "mlConfidence": None,
+        "modelVersion": None,
+        "featureSchemaVersion": None,
+        "modelLoadStatus": "not_requested",
+    }
+    ml_run = {
+        "adapterMode": "real",
+        "solverModeUsed": "ml",
+        "feasible": True,
+        "runtimeMs": 20.0,
+        "objectiveValue": 55.0,
+        "fallbackReason": None,
+        "repairApplied": True,
+        "mlConfidence": 0.8,
+        "modelVersion": "power118-baseline-v1",
+        "featureSchemaVersion": "power118-feature-schema-v1",
+        "modelLoadStatus": "loaded",
+    }
+
+    record_exact = build_eval_record("case-00000", "exact", exact_run, exact_run)
+    record_ml = build_eval_record("case-00000", "ml", ml_run, exact_run)
+    summary = summarize_eval_records([record_exact, record_ml])
+
+    assert record_ml["objectiveGapVsExact"] == 0.1
+    assert record_ml["usedModelVersion"] == "power118-baseline-v1"
+    assert len(summary) == 2
+    assert json.loads(json.dumps(summary))[0]["runCount"] == 1
+
+
+def test_load_power118_model_artifacts_reads_joblib_and_metadata(tmp_path) -> None:
+    feature_names = list(build_power118_feature_record(_power_data()).keys())
+    metadata = build_power118_metadata(feature_names, ["dispatch_g1_h1"], train_sample_count=3)
+    model_path = Path(tmp_path) / "power118_ml_model.joblib"
+    metadata_path = Path(tmp_path) / "power118_ml_metadata.json"
+    joblib.dump(
+        {
+            "feature_columns": feature_names,
+            "commitment_columns": ["unitCommitment_g1_h1"],
+            "dispatch_columns": ["dispatch_g1_h1"],
+            "commitment_model": _DummyModel([1.0] * 6),
+            "dispatch_model": _DummyModel([10.0] * 6),
+            "metadata": metadata,
+        },
+        model_path,
+    )
+    write_power118_metadata_file(metadata, metadata_path=metadata_path)
+
+    artifacts = load_power118_model_artifacts(model_path=model_path, metadata_path=metadata_path)
+
+    assert artifacts["loadSuccess"] is True
+    assert artifacts["loadStatus"] == "loaded"
+    assert artifacts["modelVersion"] == metadata["modelVersion"]
+    assert artifacts["featureSchemaVersion"] == metadata["featureSchemaVersion"]

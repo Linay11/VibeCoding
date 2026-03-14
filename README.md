@@ -162,6 +162,62 @@ For the full environment and tunnel setup, see [docs/DEV_SETUP.md](docs/DEV_SETU
 - `POST /api/runs`: run an experiment for the selected scenario
 - `GET /api/runs/latest`: fetch the latest run result for a scenario
 
+For `power-118`, `POST /api/runs` also accepts:
+- `runMode`: `exact`, `hybrid`, or `ml`
+- `timeLimitMs`: optional solver time limit for exact or hybrid solves
+- `fallbackToExact`: whether ML-related failures may fall back to exact or compat paths
+
+## Power-118 ML Workflow
+
+Build a supervised dataset from perturbed SCUC cases:
+
+```bash
+python scripts/build_power118_ml_dataset.py --num-samples 64 --output-dir backend_adapter/data/power118_dataset
+```
+
+Train the baseline model and metadata artifacts:
+
+```bash
+python scripts/train_power118_model.py --dataset-path backend_adapter/data/power118_dataset/power118_ml_dataset.pkl
+```
+
+Default artifacts:
+- `backend_adapter/data/power118_ml_model.joblib`
+- `backend_adapter/data/power118_ml_metadata.json`
+- versioned training artifacts under `backend_adapter/data/power118_model/<timestamp>/`
+
+Run offline evaluation across `exact`, `hybrid`, and `ml`:
+
+```bash
+python scripts/eval_power118_modes.py --num-cases 8 --output-dir backend_adapter/data/power118_eval
+```
+
+The evaluation script writes:
+- JSON records
+- CSV records
+- JSON summary
+- Markdown report
+
+into `backend_adapter/data/power118_eval/` by default.
+
+Key power-118 diagnostic fields returned by the backend:
+- `requestedRunMode`
+- `solverModeUsed`
+- `mlConfidence`
+- `repairApplied`
+- `fallbackReason`
+- `modelVersion`
+- `featureSchemaVersion`
+- `runtimeMs`
+- `objectiveValue`
+- `feasible`
+
+For Linux or AutoDL execution, see [docs/POWER118_REMOTE_RUNBOOK.md](docs/POWER118_REMOTE_RUNBOOK.md) or use:
+
+```bash
+./scripts/run_power118_remote_pipeline.sh
+```
+
 ## Tests
 
 Frontend checks:
@@ -176,6 +232,12 @@ Backend smoke check:
 
 ```bash
 python -m pytest backend_adapter/tests/test_run_endpoints.py -q
+```
+
+Power-118 backend regression:
+
+```bash
+python -m pytest backend_adapter/tests/test_power118_ml_pipeline.py backend_adapter/tests/test_power118_service.py backend_adapter/tests/test_run_endpoints.py -q
 ```
 
 Smoke tests currently cover the main Workbench interaction path, including:
@@ -193,6 +255,12 @@ Backend smoke details are documented in [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.m
 - experiment history beyond the latest run
 - better real backend execution coverage
 - more complete deployment setup
+
+## Current Limits
+
+- `Exact` and `Hybrid` real solves still depend on a valid Gurobi runtime and license, typically on AutoDL.
+- If Gurobi, model artifacts, or feature schema checks fail, the backend will fall back honestly to `exact` or `compat` rather than claiming a real SCUC solve succeeded.
+- Local evaluation can validate payload structure and fallback behavior even when real exact solves are unavailable, but objective-gap conclusions require a real exact baseline.
 
 ## License
 

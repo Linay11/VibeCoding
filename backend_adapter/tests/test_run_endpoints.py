@@ -31,6 +31,13 @@ def _assert_run_contract(run: dict, scenario_id: str) -> None:
 
     assert run.get("adapterMode") in {"real", "compat"}
     assert isinstance(run.get("adapterNote"), str)
+    assert run.get("solverModeUsed") in {"", "exact", "hybrid", "ml"}
+    assert isinstance(run.get("feasible"), bool)
+    assert isinstance(run.get("runtimeMs"), (int, float))
+    assert "objectiveValue" in run
+    assert "modelVersion" in run
+    assert "featureSchemaVersion" in run
+    assert "fallbackReason" in run
 
 
 def test_get_scenarios_returns_stable_shape(monkeypatch, tmp_path) -> None:
@@ -50,6 +57,14 @@ def test_get_scenarios_returns_stable_shape(monkeypatch, tmp_path) -> None:
 def test_post_run_rejects_unknown_scenario(monkeypatch, tmp_path) -> None:
     client = _make_client(monkeypatch, str(tmp_path / "latest_runs.json"))
     response = client.post("/api/runs", json={"scenarioId": "not-a-real-scenario"})
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload.get("error", {}).get("code") == "INVALID_ARGUMENT"
+
+
+def test_post_run_rejects_unknown_run_mode(monkeypatch, tmp_path) -> None:
+    client = _make_client(monkeypatch, str(tmp_path / "latest_runs.json"))
+    response = client.post("/api/runs", json={"scenarioId": "power-118", "runMode": "unsupported"})
     assert response.status_code == 400
     payload = response.json()
     assert payload.get("error", {}).get("code") == "INVALID_ARGUMENT"
@@ -110,3 +125,14 @@ def test_power118_is_listed_and_returns_stable_run_contract(monkeypatch, tmp_pat
     _assert_run_contract(run, "power-118")
     assert run.get("adapterMode") in {"real", "compat"}
     assert "power-118" in run.get("adapterNote", "")
+
+
+def test_power118_accepts_run_mode_options(monkeypatch, tmp_path) -> None:
+    client = _make_client(monkeypatch, str(tmp_path / "latest_runs.json"))
+
+    run_response = client.post("/api/runs", json={"scenarioId": "power-118", "runMode": "ml", "fallbackToExact": True})
+    assert run_response.status_code == 200
+    run = run_response.json().get("run")
+    assert isinstance(run, dict)
+    _assert_run_contract(run, "power-118")
+    assert run.get("solverModeUsed") in {"", "exact", "hybrid", "ml"}

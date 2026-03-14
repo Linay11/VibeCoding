@@ -289,8 +289,16 @@ def _obstacle_real_run() -> Dict[str, Any]:
     )
 
 
-def _power118_run() -> Dict[str, Any]:
-    return run_power118_once()
+def _power118_run(
+    run_mode: str = "exact",
+    time_limit_ms: int | None = None,
+    fallback_to_exact: bool = True,
+) -> Dict[str, Any]:
+    return run_power118_once(
+        run_mode=run_mode,
+        time_limit_ms=time_limit_ms,
+        fallback_to_exact=fallback_to_exact,
+    )
 
 
 def _safe_runner(real_runner: Callable[[], Dict[str, Any]], scenario_id: str) -> Dict[str, Any]:
@@ -300,7 +308,12 @@ def _safe_runner(real_runner: Callable[[], Dict[str, Any]], scenario_id: str) ->
         return _compat_run(scenario_id, note=f"{scenario_id} adapter fallback: {exc}")
 
 
-def run_scenario_once(scenario_id: str) -> Dict[str, Any]:
+def run_scenario_once(
+    scenario_id: str,
+    run_mode: str = "exact",
+    time_limit_ms: int | None = None,
+    fallback_to_exact: bool = True,
+) -> Dict[str, Any]:
     if scenario_id == "portfolio":
         return _safe_runner(_portfolio_real_run, "portfolio")
     if scenario_id == "control":
@@ -308,6 +321,13 @@ def run_scenario_once(scenario_id: str) -> Dict[str, Any]:
     if scenario_id == "obstacle":
         return _safe_runner(_obstacle_real_run, "obstacle")
     if scenario_id == "power-118":
-        return _safe_runner(_power118_run, "power-118")
+        return _safe_runner(
+            lambda: _power118_run(
+                run_mode=run_mode,
+                time_limit_ms=time_limit_ms,
+                fallback_to_exact=fallback_to_exact,
+            ),
+            "power-118",
+        )
     # Unknown scenario should be rejected at API layer.
     return _compat_run(scenario_id, note="unknown scenario fallback")

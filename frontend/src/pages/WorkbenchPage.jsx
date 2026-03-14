@@ -25,6 +25,10 @@ function formatGeneratedTime(value) {
   return date.toLocaleString()
 }
 
+function formatBool(value) {
+  return value ? 'Yes' : 'No'
+}
+
 function buildDerivedTrend(runData) {
   const base = Number(runData?.metrics?.solveTimeMs ?? 0)
   if (!base) {
@@ -159,6 +163,7 @@ function resolveDashboardState({ loading, refreshing, running, error, runData, s
 function WorkbenchPage() {
   const [scenarios, setScenarios] = useState([])
   const [selectedScenario, setSelectedScenario] = useState('')
+  const [selectedRunMode, setSelectedRunMode] = useState('exact')
   const [runData, setRunData] = useState(null)
   const [source, setSource] = useState('loading')
   const [runMode, setRunMode] = useState('none')
@@ -250,7 +255,10 @@ function WorkbenchPage() {
     setRunning(true)
     setError('')
     try {
-      const response = await runExperiment({ scenarioId: selectedScenario })
+      const response = await runExperiment({
+        scenarioId: selectedScenario,
+        runMode: selectedScenario === 'power-118' ? selectedRunMode : 'exact',
+      })
       if (!response.data) {
         setError('Run failed: backend did not return usable data.')
         return
@@ -265,6 +273,7 @@ function WorkbenchPage() {
     () => scenarios.find((item) => item.id === selectedScenario),
     [scenarios, selectedScenario],
   )
+  const isPower118Scenario = selectedScenario === 'power-118'
 
   const trendPoints = useMemo(() => {
     if (!runData) {
@@ -286,7 +295,27 @@ function WorkbenchPage() {
   const summaryScenario = selectedScenarioDetail?.name ?? selectedScenario ?? 'Not selected'
   const summarySource = getSourceLabel(source)
   const summaryMode = getModeLabel(runMode)
-  const summaryReason =
+  const requestedModeLabel = runData?.requestedRunMode ?? (isPower118Scenario ? selectedRunMode : null)
+  const actualModeLabel = runData?.solverModeUsed ?? null
+  const modeSwitchLabel =
+    requestedModeLabel && actualModeLabel && requestedModeLabel !== actualModeLabel
+      ? `Requested ${requestedModeLabel}, used ${actualModeLabel}.`
+      : ''
+  const solverModeLabel = runData?.solverModeUsed ? `Solver mode: ${runData.solverModeUsed}.` : ''
+  const diagnosticBits = [
+    modeSwitchLabel,
+    runData?.modelVersion ? `Model: ${runData.modelVersion}.` : '',
+    runData?.featureSchemaVersion ? `Feature schema: ${runData.featureSchemaVersion}.` : '',
+    runData?.mlConfidence != null ? `ML confidence: ${(Number(runData.mlConfidence) * 100).toFixed(1)}%.` : '',
+    runData?.repairApplied != null ? `Repair applied: ${formatBool(runData.repairApplied)}.` : '',
+    runData?.objectiveValue != null ? `Objective: ${Number(runData.objectiveValue).toFixed(3)}.` : '',
+    runData?.runtimeMs != null ? `Runtime: ${Math.round(Number(runData.runtimeMs))} ms.` : '',
+    runData?.feasible != null ? `Feasible: ${formatBool(runData.feasible)}.` : '',
+    runData?.fallbackReason ? `Fallback: ${runData.fallbackReason}.` : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+  const baseSummaryReason =
     runModeReason ||
     (runMode === 'real'
       ? 'Real solver execution completed via backend adapter.'
@@ -295,6 +324,7 @@ function WorkbenchPage() {
         : runMode === 'fallback'
           ? 'Frontend generated fallback run due to API unavailability.'
           : 'No run reason available yet.')
+  const summaryReason = [solverModeLabel, diagnosticBits, baseSummaryReason].filter(Boolean).join(' ')
   const summaryGenerated = formatGeneratedTime(runData?.generatedAt)
 
   const dashboardState = resolveDashboardState({
@@ -364,6 +394,26 @@ function WorkbenchPage() {
                 : 'No scenario loaded. Check backend API or continue with fallback demo data.')}
           </p>
 
+          {isPower118Scenario ? (
+            <>
+              <label className="field-label" htmlFor="run-mode-picker">
+                Solver Mode
+              </label>
+              <select
+                id="run-mode-picker"
+                className="field"
+                value={selectedRunMode}
+                onChange={(event) => setSelectedRunMode(event.target.value)}
+                disabled={loading || running}
+              >
+                <option value="exact">Exact</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="ml">ML Only</option>
+              </select>
+              <p className="field-help">Hybrid uses ML warm-start plus exact SCUC when the remote solver runtime is available.</p>
+            </>
+          ) : null}
+
           <div className="actions-row">
             <button
               className="btn btn-secondary"
@@ -382,6 +432,17 @@ function WorkbenchPage() {
             <p className="field-help">
               Fallback mode is active. Data is interactive, but it is not a confirmed backend latest run.
             </p>
+          ) : null}
+
+          {isPower118Scenario && runData ? (
+            <div className="field-help" aria-label="Power 118 diagnostics">
+              <p>{`Requested mode: ${requestedModeLabel ?? 'unknown'}`}</p>
+              <p>{`Actual mode: ${actualModeLabel ?? 'unknown'}`}</p>
+              <p>{`Feasible: ${formatBool(Boolean(runData.feasible))}`}</p>
+              <p>{`Runtime: ${runData.runtimeMs != null ? `${Math.round(Number(runData.runtimeMs))} ms` : 'NA'}`}</p>
+              <p>{`Objective: ${runData.objectiveValue != null ? Number(runData.objectiveValue).toFixed(3) : 'NA'}`}</p>
+              <p>{`Fallback reason: ${runData.fallbackReason || 'None'}`}</p>
+            </div>
           ) : null}
 
           {error ? (

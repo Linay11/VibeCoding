@@ -75,8 +75,68 @@ When the check passes, you can continue with:
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/runs" \
   -H "Content-Type: application/json" \
-  -d '{"scenarioId":"power-118"}'
+  -d '{"scenarioId":"power-118","runMode":"exact"}'
 ```
+
+### Build the power-118 ML dataset on AutoDL
+
+Run from repository root on AutoDL:
+
+```bash
+cd /path/to/VibeCoding
+python scripts/build_power118_ml_dataset.py --num-samples 64 --output-dir backend_adapter/data/power118_dataset
+```
+
+Expected output artifact:
+- `backend_adapter/data/power118_dataset/power118_ml_dataset.pkl`
+- `backend_adapter/data/power118_dataset/dataset_summary.json`
+
+### Train the power-118 ML artifacts on AutoDL
+
+```bash
+cd /path/to/VibeCoding
+python scripts/train_power118_model.py \
+  --dataset-path backend_adapter/data/power118_dataset/power118_ml_dataset.pkl \
+  --output-dir backend_adapter/data/power118_model
+```
+
+Expected output artifacts:
+- `backend_adapter/data/power118_ml_model.joblib`
+- `backend_adapter/data/power118_ml_metadata.json`
+- versioned training directory under `backend_adapter/data/power118_model/`
+
+### Run offline evaluation
+
+```bash
+cd /path/to/VibeCoding
+python scripts/eval_power118_modes.py --num-cases 8 --output-dir backend_adapter/data/power118_eval
+```
+
+Default evaluation outputs:
+- `backend_adapter/data/power118_eval/power118_eval_records.json`
+- `backend_adapter/data/power118_eval/power118_eval_records.csv`
+- `backend_adapter/data/power118_eval/summary.json`
+- `backend_adapter/data/power118_eval/report.md`
+
+Important interpretation note:
+- if `Exact real baseline available: NO`, the local or current backend environment did not complete a real feasible exact SCUC baseline
+- in that case the script still records fallback and compat behavior honestly, but objective-gap conclusions should be treated as unavailable
+- if you need the script to fail when no real exact baseline is available, add `--require-exact-baseline`
+
+### One-command remote pipeline
+
+On Linux or AutoDL you can run:
+
+```bash
+cd /path/to/VibeCoding
+./scripts/run_power118_remote_pipeline.sh
+```
+
+This chains:
+- environment check
+- dataset build
+- model training
+- offline evaluation
 
 ---
 
@@ -170,6 +230,20 @@ curl -X POST "http://127.0.0.1:8000/api/runs" \
   -d '{"scenarioId":"portfolio"}'
 ```
 
+Power-118 mode-specific run examples:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/runs" \
+  -H "Content-Type: application/json" \
+  -d '{"scenarioId":"power-118","runMode":"hybrid","fallbackToExact":true}'
+```
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/runs" \
+  -H "Content-Type: application/json" \
+  -d '{"scenarioId":"power-118","runMode":"ml","fallbackToExact":true}'
+```
+
 Latest run check:
 
 ```bash
@@ -208,6 +282,12 @@ If backend is unreachable, frontend falls back to mock mode with a visible notic
 ### `/api/runs/latest` returns 404
 - no previous run exists yet
 - call `POST /api/runs` first
+
+### `power-118` stays in compat mode
+- verify `python scripts/check_power118_env.py` returns `Real mode ready: YES`
+- verify `backend_adapter/data/power118_ml_model.joblib` and `backend_adapter/data/power118_ml_metadata.json` exist for `hybrid` or `ml`
+- verify the model metadata feature schema matches the current backend feature extraction code
+- inspect `fallbackReason`, `modelLoadStatus`, `modelVersion`, and `featureSchemaVersion` from the returned run payload
 
 ---
 

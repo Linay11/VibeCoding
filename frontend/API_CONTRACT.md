@@ -29,6 +29,7 @@ Both `POST /api/runs` and `GET /api/runs/latest` should return:
     "runId": "run-portfolio-20260310120000000000",
     "scenarioId": "portfolio",
     "generatedAt": "2026-03-10T12:00:00.000000+00:00",
+    "requestedRunMode": "exact",
     "metrics": {
       "solveTimeMs": 42.5,
       "infeasibilityRate": 0.0,
@@ -50,7 +51,16 @@ Both `POST /api/runs` and `GET /api/runs/latest` should return:
       { "label": "SolverSolution", "value": 8.123 }
     ],
     "adapterMode": "real",
-    "adapterNote": "portfolio solved via OSQP"
+    "adapterNote": "portfolio solved via OSQP",
+    "solverModeUsed": "exact",
+    "mlConfidence": null,
+    "repairApplied": null,
+    "fallbackReason": null,
+    "modelVersion": null,
+    "featureSchemaVersion": null,
+    "runtimeMs": 42.5,
+    "objectiveValue": 8.123,
+    "feasible": true
   }
 }
 ```
@@ -60,6 +70,7 @@ Both `POST /api/runs` and `GET /api/runs/latest` should return:
 - `run.runId`
 - `run.scenarioId`
 - `run.generatedAt`
+- `run.requestedRunMode` for power-118-aware UI comparisons
 - `run.metrics.solveTimeMs`
 - `run.metrics.infeasibilityRate`
 - `run.metrics.suboptimality`
@@ -68,6 +79,28 @@ Both `POST /api/runs` and `GET /api/runs/latest` should return:
 - `run.comparison` (array)
 - `run.adapterMode` (`real` or `compat`)
 - `run.adapterNote` (string, can be diagnostic)
+- `run.solverModeUsed`
+- `run.runtimeMs`
+- `run.objectiveValue`
+- `run.feasible`
+
+### Power-118 request options
+
+For `POST /api/runs`, the frontend may send:
+
+```json
+{
+  "scenarioId": "power-118",
+  "runMode": "hybrid",
+  "timeLimitMs": 1000,
+  "fallbackToExact": true
+}
+```
+
+Supported `runMode` values:
+- `exact`
+- `hybrid`
+- `ml`
 
 ### Optional/compatibility fields accepted by frontend
 
@@ -151,5 +184,22 @@ If backend payload is incomplete, frontend may derive:
 - `generatedAt` from current timestamp
 - `trend` from `metrics.solveTimeMs`
 - `comparison` from top strategy rows
+
+## 8. Power-118 Diagnostic Fields
+
+- `requestedRunMode`: mode the client asked for before fallback or downgrade
+- `solverModeUsed`: actual mode used for the returned result, which may differ from the requested mode after fallback
+- `mlConfidence`: optional confidence score from the ML model
+- `repairApplied`: whether lightweight ML schedule repair was applied
+- `fallbackReason`: explicit reason for any downgrade to exact, ml, or compat behavior
+- `modelVersion`: loaded ML model version, if available
+- `featureSchemaVersion`: loaded feature schema version, if available
+- `runtimeMs`: top-level runtime metric mirrored from the execution path
+- `objectiveValue`: top-level objective value used for evaluation and comparison
+- `feasible`: top-level feasibility flag for the returned result
+
+Important limitation:
+- `compat` mode is not a real exact SCUC solve
+- when Gurobi or the model artifacts are unavailable, backend responses should expose that honestly through `adapterMode`, `solverModeUsed`, and `fallbackReason`
 
 These are resilience-only fallbacks. Backend should provide full stable run payload to minimize derivation.

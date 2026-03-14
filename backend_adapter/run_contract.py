@@ -123,6 +123,9 @@ def normalize_run_payload(payload: Any, scenario_id: str) -> Dict[str, Any]:
     raw = payload if isinstance(payload, dict) else {}
 
     normalized_scenario_id = str(raw.get("scenarioId") or scenario_id)
+    requested_run_mode = raw.get("requestedRunMode")
+    if requested_run_mode is not None:
+        requested_run_mode = str(requested_run_mode).strip().lower() or None
     generated_at = raw.get("generatedAt")
     if not isinstance(generated_at, str) or not generated_at.strip():
         generated_at = _utc_now_iso()
@@ -145,14 +148,72 @@ def normalize_run_payload(payload: Any, scenario_id: str) -> Dict[str, Any]:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
         run_id = f"run-{normalized_scenario_id}-{ts}"
 
+    solver_mode_used = str(raw.get("solverModeUsed") or "").strip().lower()
+    if solver_mode_used not in {"exact", "hybrid", "ml"}:
+        solver_mode_used = ""
+
+    ml_confidence = raw.get("mlConfidence")
+    if ml_confidence is not None:
+        ml_confidence = _to_float(ml_confidence, default=0.0)
+
+    repair_applied = raw.get("repairApplied")
+    if repair_applied is not None:
+        repair_applied = bool(repair_applied)
+
+    fallback_reason = raw.get("fallbackReason")
+    if fallback_reason is not None:
+        fallback_reason = str(fallback_reason).strip() or None
+
+    model_version = raw.get("modelVersion")
+    if model_version is not None:
+        model_version = str(model_version).strip() or None
+
+    feature_schema_version = raw.get("featureSchemaVersion")
+    if feature_schema_version is not None:
+        feature_schema_version = str(feature_schema_version).strip() or None
+
+    runtime_ms = raw.get("runtimeMs", metrics["solveTimeMs"])
+    runtime_ms = max(0.0, _to_float(runtime_ms, default=metrics["solveTimeMs"]))
+
+    objective_value = raw.get("objectiveValue")
+    if objective_value is None and strategies:
+        objective_value = strategies[0]["cost"]
+    if objective_value is not None:
+        objective_value = _to_float(objective_value, default=0.0)
+
+    feasible = raw.get("feasible")
+    if feasible is None:
+        feasible = any(bool(row.get("feasible")) for row in strategies)
+    feasible = bool(feasible)
+
+    model_path = raw.get("modelPath")
+    if model_path is not None:
+        model_path = str(model_path).strip() or None
+
+    model_load_status = raw.get("modelLoadStatus")
+    if model_load_status is not None:
+        model_load_status = str(model_load_status).strip() or None
+
     return {
         "runId": run_id,
         "scenarioId": normalized_scenario_id,
         "generatedAt": generated_at,
+        "requestedRunMode": requested_run_mode,
         "metrics": metrics,
         "strategies": strategies,
         "trend": trend,
         "comparison": comparison,
         "adapterMode": mode,
         "adapterNote": note,
+        "solverModeUsed": solver_mode_used,
+        "mlConfidence": ml_confidence,
+        "repairApplied": repair_applied,
+        "fallbackReason": fallback_reason,
+        "modelVersion": model_version,
+        "featureSchemaVersion": feature_schema_version,
+        "runtimeMs": runtime_ms,
+        "objectiveValue": objective_value,
+        "feasible": feasible,
+        "modelPath": model_path,
+        "modelLoadStatus": model_load_status,
     }
