@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -31,6 +32,12 @@ DEFAULT_OUTPUT_DIR = ROOT_DIR / "backend_adapter" / "data" / "power118_model"
 DEFAULT_MODEL_FILENAME = "power118_ml_model.joblib"
 DEFAULT_METADATA_FILENAME = "power118_ml_metadata.json"
 DEFAULT_SUMMARY_FILENAME = "training_summary.json"
+DEFAULT_CONSTRAINT_TRAINING_OBJECTIVE = "auto"
+DEFAULT_EXACT_PRIORITY_MIN_COVERAGE = 0.7
+DEFAULT_EXACT_PRIORITY_WEIGHT = 2.0
+DEFAULT_CRITICAL_CLASSIFICATION_THRESHOLD = 0.5
+DEFAULT_MODEL_VARIANT = "default"
+DEFAULT_FEATURE_ABLATION_MODE = "inst+abs"
 
 
 def _utc_ts() -> str:
@@ -47,6 +54,188 @@ def _write_training_summary(output_dir: Path, summary: dict[str, Any]) -> Path:
     return summary_path
 
 
+def _normalize_binary_series(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce").fillna(0.0)
+    return numeric.ge(0.5).astype(int)
+
+
+def _resolve_constraint_training_targets(
+    constraint_candidates: pd.DataFrame,
+    requested_objective: str = DEFAULT_CONSTRAINT_TRAINING_OBJECTIVE,
+    exact_priority_min_coverage: float = DEFAULT_EXACT_PRIORITY_MIN_COVERAGE,
+    exact_priority_weight: float = DEFAULT_EXACT_PRIORITY_WEIGHT,
+) -> dict[str, Any]:
+    frame = constraint_candidates.copy()
+    row_count = int(len(frame))
+    zero_labels = np.zeros(row_count, dtype=int)
+    unit_weights = np.ones(row_count, dtype=float)
+
+    exact_available_series = (
+        pd.to_numeric(frame["labelCriticalExactAvailable"], errors="coerce").fillna(0.0)
+        if "labelCriticalExactAvailable" in frame.columns
+        else pd.Series([0.0] * row_count, index=frame.index, dtype=float)
+    )
+    exact_available_mask = exact_available_series.ge(0.5).to_numpy(dtype=bool)
+    exact_label_series = (
+        _normalize_binary_series(frame["labelCriticalExact"])
+        if "labelCriticalExact" in frame.columns
+        else pd.Series([0] * row_count, index=frame.index, dtype=int)
+    )
+    if "labelCriticalProxy" in frame.columns:
+        proxy_label_series = _normalize_binary_series(frame["labelCriticalProxy"])
+        proxy_label_source = "labelCriticalProxy"
+    elif "labelCritical" in frame.columns:
+        proxy_label_series = _normalize_binary_series(frame["labelCritical"])
+        proxy_label_source = "labelCritical"
+    elif "labelRankScore" in frame.columns:
+        proxy_label_series = pd.to_numeric(frame["labelRankScore"], errors="coerce").fillna(0.0).ge(0.75).astype(int)
+        proxy_label_source = "labelRankScore"
+    else:
+        proxy_label_series = pd.Series([0] * row_count, index=frame.index, dtype=int)
+        proxy_label_source = "unavailable"
+    rank_fallback_series = (
+        pd.to_numeric(frame["labelRankScore"], errors="coerce").fillna(0.0).ge(0.75).astype(int)
+        if "labelRankScore" in frame.columns
+        else pd.Series([0] * row_count, index=frame.index, dtype=int)
+    )
+
+    exact_coverage = float(exact_available_series.mean()) if row_count > 0 else 0.0
+    proxy_coverage = float(proxy_label_series.notna().mean()) if row_count > 0 else 0.0
+    objective = str(requested_objective or DEFAULT_CONSTRAINT_TRAINING_OBJECTIVE).strip().lower()
+    supported_objectives = {"auto", "proxy-only", "mixed", "exact-priority"}
+    if objective not in supported_objectives:
+        raise ValueError(f"Unsupported constraint training objective: {requested_objective}")
+    if objective == "auto":
+        if exact_coverage <= 0.0:
+            objective = "proxy-only"
+        elif exact_coverage >= float(max(exact_priority_min_coverage, 0.0)):
+            objective = "exact-priority"
+        else:
+            objective = "mixed"
+
+    exact_priority_weight = float(max(exact_priority_weight, 1.0))
+    if row_count == 0:
+        return {
+            "resolvedObjective": objective,
+            "requestedObjective": requested_objective,
+            "yCritical": zero_labels,
+            "sampleWeights": unit_weights,
+            "exactLabelCoverage": exact_coverage,
+            "proxyLabelCoverage": proxy_coverage,
+            "exactSampleCount": 0,
+            "proxySampleCount": 0,
+            "exactTrainingRatio": 0.0,
+            "proxyTrainingRatio": 0.0,
+            "exactPriorityWeight": exact_priority_weight,
+            "labelPreferenceOrder": ["labelCriticalExact", "labelCriticalProxy", "labelCritical"],
+            "trainingLabelSourceCounts": {},
+            "proxyLabelSource": proxy_label_source,
+        }
+
+    y_proxy = proxy_label_series.to_numpy(dtype=int)
+    y_exact = exact_label_series.to_numpy(dtype=int)
+    y_rank_fallback = rank_fallback_series.to_numpy(dtype=int)
+    y_final = np.array(y_proxy, copy=True)
+    source_array = np.array([proxy_label_source] * row_count, dtype=object)
+    sample_weights = np.ones(row_count, dtype=float)
+
+    if objective in {"mixed", "exact-priority"}:
+        y_final = np.array(y_proxy, copy=True)
+        y_final[exact_available_mask] = y_exact[exact_available_mask]
+        source_array[exact_available_mask] = "labelCriticalExact"
+        if objective == "exact-priority":
+            sample_weights[exact_available_mask] = exact_priority_weight
+
+    if proxy_label_source == "unavailable":
+        missing_mask = ~exact_available_mask
+        y_final[missing_mask] = y_rank_fallback[missing_mask]
+        source_array[missing_mask] = "labelRankScore"
+
+    y_final = np.clip(y_final, 0, 1).astype(int)
+    exact_sample_count = int(np.sum(source_array == "labelCriticalExact"))
+    proxy_sample_count = int(row_count - exact_sample_count)
+    source_counts = pd.Series(source_array).value_counts(dropna=False).to_dict()
+
+    return {
+        "resolvedObjective": objective,
+        "requestedObjective": requested_objective,
+        "yCritical": y_final,
+        "sampleWeights": sample_weights,
+        "exactLabelCoverage": exact_coverage,
+        "proxyLabelCoverage": proxy_coverage,
+        "exactSampleCount": exact_sample_count,
+        "proxySampleCount": proxy_sample_count,
+        "exactTrainingRatio": float(exact_sample_count / max(row_count, 1)),
+        "proxyTrainingRatio": float(proxy_sample_count / max(row_count, 1)),
+        "exactPriorityWeight": exact_priority_weight,
+        "labelPreferenceOrder": ["labelCriticalExact", "labelCriticalProxy", "labelCritical"],
+        "trainingLabelSourceCounts": {str(key): int(value) for key, value in source_counts.items()},
+        "proxyLabelSource": proxy_label_source,
+    }
+
+
+def _predict_positive_probability(model: Any, feature_array: np.ndarray) -> np.ndarray:
+    if hasattr(model, "predict_proba"):
+        probabilities = np.asarray(model.predict_proba(feature_array), dtype=float)
+        classes = np.asarray(getattr(model, "classes_", [0, 1]))
+        if probabilities.ndim == 2 and probabilities.shape[1] == 1:
+            positive_value = 1.0 if int(classes[0]) == 1 else 0.0
+            return np.full(probabilities.shape[0], positive_value, dtype=float)
+        if probabilities.ndim == 2 and probabilities.shape[1] >= 2:
+            positive_index = int(np.where(classes == 1)[0][0]) if np.any(classes == 1) else probabilities.shape[1] - 1
+            return np.clip(probabilities[:, positive_index], 0.0, 1.0)
+    raw_prediction = np.asarray(model.predict(feature_array), dtype=float).reshape(-1)
+    return np.clip(raw_prediction, 0.0, 1.0)
+
+
+def _resolve_constraint_feature_subset(
+    instance_feature_names: list[str],
+    abstract_feature_names: list[str],
+    requested_mode: str = DEFAULT_FEATURE_ABLATION_MODE,
+) -> dict[str, Any]:
+    mode = str(requested_mode or DEFAULT_FEATURE_ABLATION_MODE).strip().lower()
+    supported_modes = {"inst-only", "abs-only", "inst+abs"}
+    if mode not in supported_modes:
+        raise ValueError(f"Unsupported feature ablation mode: {requested_mode}")
+
+    selected_instance = list(instance_feature_names)
+    selected_abstract = list(abstract_feature_names)
+    effective_mode = mode
+    fallback_reason = None
+
+    if mode == "inst-only":
+        selected_abstract = []
+        if not selected_instance and abstract_feature_names:
+            # No instance features found; fallback to abs-only while marking it explicitly.
+            selected_instance = []
+            selected_abstract = list(abstract_feature_names)
+            effective_mode = "abs-only"
+            fallback_reason = "inst-only requested but no inst_ features; fell back to abs-only"
+    elif mode == "abs-only":
+        selected_instance = []
+        if not selected_abstract and instance_feature_names:
+            selected_instance = list(instance_feature_names)
+            selected_abstract = []
+            effective_mode = "inst-only"
+            fallback_reason = "abs-only requested but no abs_ features; fell back to inst-only"
+    else:
+        if not selected_instance and selected_abstract:
+            effective_mode = "abs-only"
+            fallback_reason = "inst+abs requested but inst_ features unavailable; fell back to abs-only"
+        elif not selected_abstract and selected_instance:
+            effective_mode = "inst-only"
+            fallback_reason = "inst+abs requested but abs_ features unavailable; fell back to inst-only"
+
+    return {
+        "requestedMode": mode,
+        "effectiveMode": effective_mode,
+        "fallbackReason": fallback_reason,
+        "instanceFeatureNames": selected_instance,
+        "abstractFeatureNames": selected_abstract,
+        "featureNames": selected_instance + selected_abstract,
+    }
+
+
 def train_model(
     dataset_path: Path,
     output_dir: Path,
@@ -58,8 +247,14 @@ def train_model(
     feature_schema_version: str,
     publish_default_artifacts: bool = True,
     archive_tag: str | None = None,
+    constraint_training_objective: str = DEFAULT_CONSTRAINT_TRAINING_OBJECTIVE,
+    exact_priority_min_coverage: float = DEFAULT_EXACT_PRIORITY_MIN_COVERAGE,
+    exact_priority_weight: float = DEFAULT_EXACT_PRIORITY_WEIGHT,
+    critical_classification_threshold: float = DEFAULT_CRITICAL_CLASSIFICATION_THRESHOLD,
+    model_variant: str = DEFAULT_MODEL_VARIANT,
+    feature_ablation_mode: str = DEFAULT_FEATURE_ABLATION_MODE,
 ) -> tuple[dict, dict, dict[str, Any]]:
-    from sklearn.ensemble import ExtraTreesRegressor
+    from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 
     dataset_bundle = pd.read_pickle(dataset_path)
     features = dataset_bundle["features"]
@@ -103,11 +298,36 @@ def train_model(
     constraint_summary_model = None
     constraint_fixing_model = None
     constraint_scoring_model = None
+    constraint_ranking_aux_model = None
     constraint_summary_columns: list[str] = []
     constraint_fixing_columns: list[str] = []
+    instance_feature_names_all: list[str] = []
+    abstract_feature_names_all: list[str] = []
     instance_feature_names: list[str] = []
     abstract_feature_names: list[str] = []
+    feature_ablation_info = {
+        "requestedMode": str(feature_ablation_mode),
+        "effectiveMode": str(feature_ablation_mode),
+        "fallbackReason": None,
+        "featureNames": [],
+    }
     constraint_metrics: dict[str, float] = {}
+    constraint_scoring_target_name = "labelCritical"
+    constraint_training_info = {
+        "resolvedObjective": "proxy-only",
+        "requestedObjective": str(constraint_training_objective),
+        "exactLabelCoverage": 0.0,
+        "proxyLabelCoverage": 0.0,
+        "exactSampleCount": 0,
+        "proxySampleCount": 0,
+        "exactTrainingRatio": 0.0,
+        "proxyTrainingRatio": 0.0,
+        "exactPriorityWeight": float(max(exact_priority_weight, 1.0)),
+        "labelPreferenceOrder": ["labelCriticalExact", "labelCriticalProxy", "labelCritical"],
+        "trainingLabelSourceCounts": {},
+        "proxyLabelSource": "unavailable",
+    }
+    critical_classification_threshold = float(min(max(critical_classification_threshold, 0.0), 1.0))
 
     if isinstance(constraint_labels, pd.DataFrame) and not constraint_labels.empty:
         constraint_summary_columns = [
@@ -154,25 +374,68 @@ def train_model(
             )
 
     if isinstance(constraint_candidates, pd.DataFrame) and not constraint_candidates.empty:
-        instance_feature_names = [column for column in constraint_candidates.columns if column.startswith("inst_")]
-        abstract_feature_names = [column for column in constraint_candidates.columns if column.startswith("abs_")]
-        constraint_feature_names = instance_feature_names + abstract_feature_names
+        instance_feature_names_all = [
+            column for column in constraint_candidates.columns if column.startswith("inst_")
+        ]
+        abstract_feature_names_all = [
+            column for column in constraint_candidates.columns if column.startswith("abs_")
+        ]
+        feature_ablation_info = _resolve_constraint_feature_subset(
+            instance_feature_names=instance_feature_names_all,
+            abstract_feature_names=abstract_feature_names_all,
+            requested_mode=feature_ablation_mode,
+        )
+        instance_feature_names = list(feature_ablation_info["instanceFeatureNames"])
+        abstract_feature_names = list(feature_ablation_info["abstractFeatureNames"])
+        constraint_feature_names = list(feature_ablation_info["featureNames"])
         if constraint_feature_names:
             X_constraint = constraint_candidates[constraint_feature_names].to_numpy(dtype=float)
-            y_constraint_score = constraint_candidates["labelRankScore"].to_numpy(dtype=float)
-            constraint_scoring_model = ExtraTreesRegressor(
+            constraint_training_info = _resolve_constraint_training_targets(
+                constraint_candidates=constraint_candidates,
+                requested_objective=constraint_training_objective,
+                exact_priority_min_coverage=exact_priority_min_coverage,
+                exact_priority_weight=exact_priority_weight,
+            )
+            y_constraint_critical = np.asarray(constraint_training_info["yCritical"], dtype=int)
+            sample_weights = np.asarray(constraint_training_info["sampleWeights"], dtype=float)
+            constraint_scoring_model = ExtraTreesClassifier(
                 n_estimators=n_estimators,
                 random_state=random_state + 4,
                 n_jobs=-1,
             )
-            constraint_scoring_model.fit(X_constraint, y_constraint_score)
-            constraint_score_pred = constraint_scoring_model.predict(X_constraint)
+            constraint_scoring_model.fit(X_constraint, y_constraint_critical, sample_weight=sample_weights)
+            critical_probability = _predict_positive_probability(constraint_scoring_model, X_constraint)
+            critical_prediction = (critical_probability >= critical_classification_threshold).astype(int)
+            constraint_metrics["constraint_critical_train_accuracy"] = float(
+                np.mean(critical_prediction == y_constraint_critical)
+            )
+            constraint_metrics["constraint_critical_train_brier"] = float(
+                np.mean((critical_probability - y_constraint_critical) ** 2)
+            )
+            constraint_metrics["constraint_critical_positive_rate"] = float(
+                np.mean(y_constraint_critical)
+            )
             constraint_metrics["constraint_scoring_train_r2"] = float(
-                constraint_scoring_model.score(X_constraint, y_constraint_score)
+                constraint_scoring_model.score(X_constraint, y_constraint_critical)
             )
-            constraint_metrics["constraint_scoring_train_mae"] = float(
-                abs(constraint_score_pred - y_constraint_score).mean()
-            )
+            if "labelRankScore" in constraint_candidates.columns:
+                y_constraint_rank = pd.to_numeric(
+                    constraint_candidates["labelRankScore"],
+                    errors="coerce",
+                ).fillna(0.0).to_numpy(dtype=float)
+                constraint_ranking_aux_model = ExtraTreesRegressor(
+                    n_estimators=n_estimators,
+                    random_state=random_state + 5,
+                    n_jobs=-1,
+                )
+                constraint_ranking_aux_model.fit(X_constraint, y_constraint_rank)
+                rank_pred = np.asarray(constraint_ranking_aux_model.predict(X_constraint), dtype=float)
+                constraint_metrics["constraint_rank_aux_train_r2"] = float(
+                    constraint_ranking_aux_model.score(X_constraint, y_constraint_rank)
+                )
+                constraint_metrics["constraint_rank_aux_train_mae"] = float(
+                    np.mean(np.abs(rank_pred - y_constraint_rank))
+                )
 
     metadata = build_power118_metadata(
         feature_names=list(features.columns),
@@ -188,7 +451,30 @@ def train_model(
     metadata["constraintPredictionMode"] = "fixing-mask"
     metadata["constraintRepresentationVersion"] = "power118-constraint-repr-v3"
     metadata["constraintScoringModelEnabled"] = bool(constraint_scoring_model is not None)
-    metadata["constraintScoringMode"] = "ranking-regression"
+    metadata["constraintScoringMode"] = "critical-first-classification"
+    metadata["constraintScoringTargetName"] = constraint_scoring_target_name
+    metadata["modelVariant"] = str(model_variant or DEFAULT_MODEL_VARIANT)
+    metadata["featureAblationMode"] = str(feature_ablation_info["requestedMode"])
+    metadata["featureAblationModeEffective"] = str(feature_ablation_info["effectiveMode"])
+    metadata["featureAblationFallbackReason"] = feature_ablation_info["fallbackReason"]
+    metadata["constraintTrainingObjective"] = str(constraint_training_info["resolvedObjective"])
+    metadata["constraintTrainingObjectiveRequested"] = str(constraint_training_info["requestedObjective"])
+    metadata["constraintLabelPreferenceOrder"] = list(constraint_training_info["labelPreferenceOrder"])
+    metadata["exactLabelCoverage"] = float(constraint_training_info["exactLabelCoverage"])
+    metadata["proxyLabelCoverage"] = float(constraint_training_info["proxyLabelCoverage"])
+    metadata["exactLabelSampleCount"] = int(constraint_training_info["exactSampleCount"])
+    metadata["proxyLabelSampleCount"] = int(constraint_training_info["proxySampleCount"])
+    metadata["exactTrainingRatio"] = float(constraint_training_info["exactTrainingRatio"])
+    metadata["proxyTrainingRatio"] = float(constraint_training_info["proxyTrainingRatio"])
+    metadata["constraintTrainingLabelSourceCounts"] = dict(constraint_training_info["trainingLabelSourceCounts"])
+    metadata["constraintProxyLabelSource"] = str(constraint_training_info["proxyLabelSource"])
+    metadata["constraintExactPriorityWeight"] = float(constraint_training_info["exactPriorityWeight"])
+    metadata["criticalClassificationThreshold"] = float(critical_classification_threshold)
+    metadata["constraintCriticalFirstModel"] = bool(constraint_scoring_model is not None)
+    metadata["constraintAuxRankingModelEnabled"] = bool(constraint_ranking_aux_model is not None)
+    metadata["constraintAuxRankingTargetName"] = "labelRankScore"
+    metadata["instanceFeatureNamesAll"] = list(instance_feature_names_all)
+    metadata["abstractFeatureNamesAll"] = list(abstract_feature_names_all)
     metadata["instanceFeatureNames"] = instance_feature_names
     metadata["abstractFeatureNames"] = abstract_feature_names
     model_bundle = {
@@ -200,10 +486,18 @@ def train_model(
         "constraint_summary_model": constraint_summary_model,
         "constraint_fixing_model": constraint_fixing_model,
         "constraint_scoring_model": constraint_scoring_model,
+        "constraint_ranking_aux_model": constraint_ranking_aux_model,
         "constraint_summary_columns": constraint_summary_columns,
         "constraint_fixing_columns": constraint_fixing_columns,
+        "model_variant": metadata["modelVariant"],
+        "feature_ablation_mode": metadata["featureAblationMode"],
+        "feature_ablation_mode_effective": metadata["featureAblationModeEffective"],
         "instance_feature_names": instance_feature_names,
         "abstract_feature_names": abstract_feature_names,
+        "instance_feature_names_all": instance_feature_names_all,
+        "abstract_feature_names_all": abstract_feature_names_all,
+        "critical_classification_threshold": critical_classification_threshold,
+        "constraint_training_objective": metadata["constraintTrainingObjective"],
         "metrics": {
             "commitment_train_r2": float(commitment_model.score(X, y_commitment)),
             "dispatch_train_r2": float(dispatch_model.score(X, y_dispatch)),
@@ -245,10 +539,19 @@ def train_model(
         "publishedMetadataPath": str(published_metadata_path) if publish_default_artifacts else None,
         "publishedDefaultArtifacts": bool(publish_default_artifacts),
         "modelVersion": model_version,
+        "modelVariant": metadata["modelVariant"],
+        "featureAblationMode": metadata["featureAblationMode"],
+        "featureAblationModeEffective": metadata["featureAblationModeEffective"],
         "featureSchemaVersion": feature_schema_version,
         "trainSampleCount": len(features),
         "seed": random_state,
         "nEstimators": n_estimators,
+        "constraintTrainingObjective": metadata["constraintTrainingObjective"],
+        "constraintTrainingObjectiveRequested": metadata["constraintTrainingObjectiveRequested"],
+        "exactLabelCoverage": metadata["exactLabelCoverage"],
+        "proxyLabelCoverage": metadata["proxyLabelCoverage"],
+        "exactTrainingRatio": metadata["exactTrainingRatio"],
+        "proxyTrainingRatio": metadata["proxyTrainingRatio"],
         "metrics": model_bundle["metrics"],
     }
     summary_path = _write_training_summary(archive_dir, training_summary)
@@ -292,6 +595,44 @@ def main() -> int:
         action="store_true",
         help="Skip copying the trained artifacts to the default service load paths.",
     )
+    parser.add_argument(
+        "--constraint-training-objective",
+        type=str,
+        default=DEFAULT_CONSTRAINT_TRAINING_OBJECTIVE,
+        choices=["auto", "proxy-only", "mixed", "exact-priority"],
+        help="Critical-first objective: auto/proxy-only/mixed/exact-priority.",
+    )
+    parser.add_argument(
+        "--exact-priority-min-coverage",
+        type=float,
+        default=DEFAULT_EXACT_PRIORITY_MIN_COVERAGE,
+        help="When objective=auto, exact label coverage above this threshold switches to exact-priority.",
+    )
+    parser.add_argument(
+        "--exact-priority-weight",
+        type=float,
+        default=DEFAULT_EXACT_PRIORITY_WEIGHT,
+        help="Sample weight multiplier for exact labels in exact-priority objective.",
+    )
+    parser.add_argument(
+        "--critical-classification-threshold",
+        type=float,
+        default=DEFAULT_CRITICAL_CLASSIFICATION_THRESHOLD,
+        help="Threshold used to convert critical probability to binary critical label.",
+    )
+    parser.add_argument(
+        "--model-variant",
+        type=str,
+        default=DEFAULT_MODEL_VARIANT,
+        help="Variant identifier written into model metadata for ablation tracking.",
+    )
+    parser.add_argument(
+        "--feature-ablation-mode",
+        type=str,
+        default=DEFAULT_FEATURE_ABLATION_MODE,
+        choices=["inst-only", "abs-only", "inst+abs"],
+        help="Constraint feature subset for ablation: inst-only/abs-only/inst+abs.",
+    )
     args = parser.parse_args()
 
     model_bundle, metadata, training_summary = train_model(
@@ -305,6 +646,12 @@ def main() -> int:
         feature_schema_version=args.feature_schema_version,
         publish_default_artifacts=not args.no_publish_default_artifacts,
         archive_tag=args.archive_tag,
+        constraint_training_objective=args.constraint_training_objective,
+        exact_priority_min_coverage=args.exact_priority_min_coverage,
+        exact_priority_weight=args.exact_priority_weight,
+        critical_classification_threshold=args.critical_classification_threshold,
+        model_variant=args.model_variant,
+        feature_ablation_mode=args.feature_ablation_mode,
     )
     print("Power118 model training")
     print(f"- Input dataset: {args.dataset_path.resolve()}")
@@ -316,6 +663,16 @@ def main() -> int:
     print(f"- Seed: {args.random_state}")
     print(f"- commitment_train_r2={model_bundle['metrics']['commitment_train_r2']:.4f}")
     print(f"- dispatch_train_r2={model_bundle['metrics']['dispatch_train_r2']:.4f}")
+    print(f"- modelVariant={metadata.get('modelVariant')}")
+    print(
+        "- featureAblationMode="
+        f"{metadata.get('featureAblationMode')} (effective={metadata.get('featureAblationModeEffective')})"
+    )
+    print(f"- constraintTrainingObjective={metadata.get('constraintTrainingObjective')}")
+    print(
+        "- exact/proxy coverage="
+        f"{metadata.get('exactLabelCoverage', 0.0):.3f}/{metadata.get('proxyLabelCoverage', 0.0):.3f}"
+    )
     print(f"- modelVersion={metadata['modelVersion']}")
     print(f"- featureSchemaVersion={metadata['featureSchemaVersion']}")
     return 0

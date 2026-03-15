@@ -66,6 +66,22 @@ def check_eval_consistency(records_payload: dict[str, Any], summary_payload: dic
         if non_exact_records and all(row.get("objectiveGapVsExact") is None for row in non_exact_records):
             issues.append("exact baseline is available but all objectiveGapVsExact values are null")
 
+    v3_records = [row for row in records if row.get("requestedMode") == "hybrid_constraint_aware_v3"]
+    v3_tradeoff = summary.get("v3ReductionTradeoff", [])
+    if v3_tradeoff:
+        required_atomic_fields = {"reductionStrength", "criticalTopKRatio", "criticalConstraintCount", "deferredConstraintCount"}
+        for field_name in required_atomic_fields:
+            if v3_records and any(field_name not in row for row in v3_records):
+                issues.append(f"v3 tradeoff summary exists but records are missing atomic field: {field_name}")
+    if v3_records:
+        distinct_strengths = sorted({row.get("reductionStrength") for row in v3_records})
+        if len(distinct_strengths) > 1 and not v3_tradeoff:
+            issues.append("multiple v3 reductionStrength values exist in records but summary has no v3ReductionTradeoff")
+        if v3_tradeoff:
+            summary_strengths = sorted({row.get("reductionStrength") for row in v3_tradeoff})
+            if distinct_strengths != summary_strengths:
+                issues.append("v3 reductionStrength buckets mismatch between records and summary")
+
     for record in exact_records:
         if record.get("adapterMode") == "real" and record.get("status") == "COMPAT":
             issues.append("real exact record was incorrectly classified as COMPAT")

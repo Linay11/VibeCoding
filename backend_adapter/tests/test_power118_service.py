@@ -385,24 +385,35 @@ def test_power118_service_returns_constraint_aware_v3_payload_when_reduced_solve
         power118_service,
         "_predict_constraint_scores_with_model",
         lambda preview, schedule_prediction, model_artifacts: ({
-            "constraintScores": {"ramp:g1:h1:up": 0.9},
-            "predictedCriticalConstraints": [{"constraintId": "ramp:g1:h1:up", "predictedScore": 0.9}],
-            "predictedReducibleConstraints": [{"constraintId": "line:g1:h1:absCap", "predictedScore": 0.1}],
+            "constraintScores": {f"ramp:g1:h{i}:up": 1.0 - (i * 0.1) for i in range(1, 11)},
+            "predictedCriticalConstraints": [],
+            "predictedReducibleConstraints": [],
             "constraintConfidence": 0.82,
-            "topKConstraintIds": ["ramp:g1:h1:up"],
-            "criticalConstraintCount": 1,
-            "deferredConstraintCount": 1,
+            "topKConstraintIds": [],
+            "criticalConstraintCount": 0,
+            "deferredConstraintCount": 0,
+            "constraintCandidates": [
+                {
+                    "constraintId": f"ramp:g1:h{i}:up",
+                    "canBeReduced": 1.0,
+                    "predictedScore": 1.0 - (i * 0.05),
+                }
+                for i in range(1, 11)
+            ],
         }, None),
     )
 
-    run = power118_service.run_power118_once(run_mode="hybrid_constraint_aware_v3")
+    run = power118_service.run_power118_once(run_mode="hybrid_constraint_aware_v3", critical_top_k_ratio=0.1)
 
     assert run["adapterMode"] == "real"
     assert run["requestedMode"] == "hybrid_constraint_aware_v3"
     assert run["solverModeUsed"] == "hybrid"
     assert run["constraintScoringUsed"] is True
+    assert run["criticalTopKRatio"] == 0.1
+    assert run["reductionStrength"] == 0.1
     assert run["criticalConstraintCount"] == 1
-    assert run["deferredConstraintCount"] == 1
+    assert run["deferredConstraintCount"] == 9
+    assert run["constraintReductionRatio"] == 0.9
     assert run["stagedSolveRounds"] == 1
 
 

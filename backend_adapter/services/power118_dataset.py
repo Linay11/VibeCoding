@@ -24,6 +24,7 @@ GENERATOR_FEATURE_KEYS = (
 )
 
 CONSTRAINT_LABEL_SCHEMA_VERSION = "power118-constraint-label-v1"
+CRITICAL_LABEL_SCHEMA_VERSION = "power118-critical-label-v1"
 
 
 def _repo_root() -> Path:
@@ -265,11 +266,27 @@ def _safe_json_dumps(value: Any) -> str:
     return json.dumps(value if value is not None else {})
 
 
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _critical_proxy_label(can_be_reduced: float, tight_label: float, rank_score: float) -> float:
+    if can_be_reduced < 0.5:
+        return 0.0
+    return 1.0 if (tight_label >= 0.5 or rank_score >= 0.75) else 0.0
+
+
 def build_power118_constraint_candidate_records(
     power_data: dict[str, Any],
     result: dict[str, Any] | None = None,
     schedule_prediction: dict[str, Any] | None = None,
     sample_id: str | None = None,
+    impact_records_by_constraint_id: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     summary = power_data.get("summary", {})
     total_load_by_hour = list(power_data.get("totalLoadByHour", []))
@@ -411,9 +428,10 @@ def build_power118_constraint_candidate_records(
                 instance_features["inst_busLoad"] = bus_load
                 abstract_features["abs_busIndex"] = float(bus_idx)
 
+            constraint_id = str(record.get("constraintId") or "")
             candidate_record = {
                 "sampleId": sample_id or "",
-                "constraintId": str(record.get("constraintId") or ""),
+                "constraintId": constraint_id,
                 "constraintType": str(constraint_type),
                 "constraintSubtype": subtype,
                 "instanceFeaturesJson": _safe_json_dumps(instance_features),
@@ -425,6 +443,47 @@ def build_power118_constraint_candidate_records(
                 "canBeDeferred": 1.0 if str(constraint_type) in {"ramp", "line"} else 0.0,
                 "canBeFixed": 1.0 if str(constraint_type) == "generatorLimit" else 0.0,
             }
+
+            impact_record = (
+                impact_records_by_constraint_id.get(constraint_id)
+                if isinstance(impact_records_by_constraint_id, dict)
+                else None
+            )
+            impact_record = impact_record if isinstance(impact_record, dict) else {}
+            proxy_label = _critical_proxy_label(float(candidate_record["canBeReduced"]), tight_label, rank_score)
+            exact_available = 1.0 if float(impact_record.get("exactLabelAvailable", 0.0) or 0.0) >= 0.5 else 0.0
+            exact_label = float(impact_record.get("labelCriticalExact", 0.0) or 0.0)
+            fallback_label_source = str(impact_record.get("fallbackLabelSource") or "").strip()
+            if exact_available >= 0.5:
+                final_label = exact_label
+                label_source = str(impact_record.get("labelSource") or "impact_exact_group_probe")
+            else:
+                final_label = proxy_label
+                if fallback_label_source:
+                    label_source = fallback_label_source
+                elif impact_record:
+                    label_source = "impact_probe_unavailable_fallback"
+                else:
+                    label_source = "heuristic_slack_proxy"
+
+            candidate_record.update(
+                {
+                    "criticalLabelSchemaVersion": CRITICAL_LABEL_SCHEMA_VERSION,
+                    "labelCritical": float(final_label),
+                    "labelCriticalExact": float(exact_label),
+                    "labelCriticalExactAvailable": float(exact_available),
+                    "labelCriticalProxy": float(proxy_label),
+                    "labelSource": label_source,
+                    "impactProbeEvaluated": float(impact_record.get("probeEvaluated", 0.0) or 0.0),
+                    "impactProbeStatus": str(impact_record.get("probeStatus") or ("not_probed" if not impact_record else "unknown")),
+                    "impactProbeGroupId": str(impact_record.get("probeGroupId") or ""),
+                    "impactFeasibilityDelta": _optional_float(impact_record.get("impactFeasibilityDelta")),
+                    "impactObjectiveDeltaRatio": _optional_float(impact_record.get("impactObjectiveDeltaRatio")),
+                    "impactRuntimeDeltaRatio": _optional_float(impact_record.get("impactRuntimeDeltaRatio")),
+                    "impactRuntimeDeltaMs": _optional_float(impact_record.get("impactRuntimeDeltaMs")),
+                    "impactScoreExact": _optional_float(impact_record.get("impactScoreExact")),
+                }
+            )
             for feature_name, feature_value in instance_features.items():
                 candidate_record[feature_name] = float(feature_value)
             for feature_name, feature_value in abstract_features.items():
@@ -439,6 +498,7 @@ def build_power118_constraint_candidate_frame(
     result: dict[str, Any] | None = None,
     schedule_prediction: dict[str, Any] | None = None,
     sample_id: str | None = None,
+    impact_records_by_constraint_id: dict[str, dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
     return pd.DataFrame(
         build_power118_constraint_candidate_records(
@@ -446,6 +506,7 @@ def build_power118_constraint_candidate_frame(
             result=result,
             schedule_prediction=schedule_prediction,
             sample_id=sample_id,
+            impact_records_by_constraint_id=impact_records_by_constraint_id,
         )
     )
 

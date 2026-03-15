@@ -216,6 +216,8 @@ def _decorate_payload(
     constraint_aware_reduction_mode: str | None = None,
     reduced_model_validated: bool | None = None,
     reduction_rejected_reason: str | None = None,
+    reduction_strength: float | None = None,
+    critical_top_k_ratio: float | None = None,
 ) -> Dict[str, Any]:
     artifacts = model_artifacts or _base_model_artifacts()
     payload["requestedRunMode"] = requested_run_mode
@@ -254,6 +256,8 @@ def _decorate_payload(
     payload["constraintAwareReductionMode"] = constraint_aware_reduction_mode
     payload["reducedModelValidated"] = reduced_model_validated
     payload["reductionRejectedReason"] = reduction_rejected_reason
+    payload["reductionStrength"] = reduction_strength
+    payload["criticalTopKRatio"] = critical_top_k_ratio
     total_binary_count = None
     if fixed_commitment_count is not None:
         dispatch = payload.get("unitCommitmentByHour")
@@ -265,6 +269,10 @@ def _decorate_payload(
         else None
     )
     payload["constraintReductionRatio"] = payload["fixedBinaryRatio"]
+    if constraint_aware_hybrid_used and critical_constraint_count is not None and deferred_constraint_count is not None:
+        total_candidates = critical_constraint_count + deferred_constraint_count
+        if total_candidates > 0:
+            payload["constraintReductionRatio"] = float(deferred_constraint_count) / float(total_candidates)
     return payload
 
 
@@ -294,6 +302,8 @@ def _compat_run_payload(
     constraint_aware_reduction_mode: str | None = None,
     reduced_model_validated: bool | None = None,
     reduction_rejected_reason: str | None = None,
+    reduction_strength: float | None = None,
+    critical_top_k_ratio: float | None = None,
 ) -> Dict[str, Any]:
     preview = preview or {}
     total_load_by_hour = preview.get("totalLoadByHour") if isinstance(preview.get("totalLoadByHour"), list) else []
@@ -377,6 +387,8 @@ def _compat_run_payload(
         constraint_aware_reduction_mode=constraint_aware_reduction_mode,
         reduced_model_validated=reduced_model_validated,
         reduction_rejected_reason=reduction_rejected_reason,
+        reduction_strength=reduction_strength,
+        critical_top_k_ratio=critical_top_k_ratio,
     )
 
 
@@ -405,6 +417,8 @@ def _real_run_payload(
     constraint_aware_reduction_mode: str | None = None,
     reduced_model_validated: bool | None = None,
     reduction_rejected_reason: str | None = None,
+    reduction_strength: float | None = None,
+    critical_top_k_ratio: float | None = None,
 ) -> Dict[str, Any]:
     objective = float(result.get("objective") or 0.0)
     top_generators = result.get("topGenerators") if isinstance(result.get("topGenerators"), list) else []
@@ -509,6 +523,8 @@ def _real_run_payload(
         constraint_aware_reduction_mode=constraint_aware_reduction_mode,
         reduced_model_validated=reduced_model_validated,
         reduction_rejected_reason=reduction_rejected_reason,
+        reduction_strength=reduction_strength,
+        critical_top_k_ratio=critical_top_k_ratio,
     )
 
 
@@ -536,6 +552,8 @@ def _ml_run_payload(
     constraint_aware_reduction_mode: str | None = None,
     reduced_model_validated: bool | None = None,
     reduction_rejected_reason: str | None = None,
+    reduction_strength: float | None = None,
+    critical_top_k_ratio: float | None = None,
 ) -> Dict[str, Any]:
     artifacts = model_artifacts or _base_model_artifacts()
     note_parts = [
@@ -616,6 +634,8 @@ def _ml_run_payload(
         constraint_aware_reduction_mode=constraint_aware_reduction_mode,
         reduced_model_validated=reduced_model_validated,
         reduction_rejected_reason=reduction_rejected_reason,
+        reduction_strength=reduction_strength,
+        critical_top_k_ratio=critical_top_k_ratio,
     )
 
 
@@ -786,6 +806,7 @@ def _build_constraint_aware_fixing_plan(
 
 def _build_constraint_scoring_plan(
     constraint_scoring: dict[str, Any] | None,
+    critical_top_k_ratio: float = 0.2,
 ) -> dict[str, Any]:
     if not isinstance(constraint_scoring, dict):
         return {
@@ -794,20 +815,31 @@ def _build_constraint_scoring_plan(
             "criticalConstraintCount": 0,
             "deferredConstraintCount": 0,
             "constraintConfidence": None,
+            "criticalTopKRatio": critical_top_k_ratio,
         }
-
-    critical_ids = [str(value) for value in constraint_scoring.get("topKConstraintIds", [])]
-    deferred_ids = [
-        str(item.get("constraintId"))
-        for item in constraint_scoring.get("predictedReducibleConstraints", [])
-        if isinstance(item, dict) and item.get("constraintId")
+    critical_top_k_ratio = float(critical_top_k_ratio)
+    critical_top_k_ratio = 0.2 if critical_top_k_ratio <= 0 else critical_top_k_ratio
+    candidate_rows = list(constraint_scoring.get("constraintCandidates", []))
+    reducible_rows = [
+        row for row in candidate_rows
+        if isinstance(row, dict) and float(row.get("canBeReduced", 0.0) or 0.0) >= 0.5 and row.get("constraintId")
     ]
+    reducible_rows.sort(key=lambda item: float(item.get("predictedScore", 0.0) or 0.0), reverse=True)
+    if reducible_rows:
+        critical_count = max(1, int(round(len(reducible_rows) * critical_top_k_ratio)))
+    else:
+        critical_count = 0
+    critical_rows = reducible_rows[:critical_count]
+    deferred_rows = reducible_rows[critical_count:]
+    critical_ids = [str(row.get("constraintId")) for row in critical_rows]
+    deferred_ids = [str(row.get("constraintId")) for row in deferred_rows]
     return {
         "criticalConstraintIds": critical_ids,
         "deferredConstraintIds": deferred_ids,
-        "criticalConstraintCount": int(constraint_scoring.get("criticalConstraintCount", len(critical_ids))),
-        "deferredConstraintCount": int(constraint_scoring.get("deferredConstraintCount", len(deferred_ids))),
+        "criticalConstraintCount": len(critical_ids),
+        "deferredConstraintCount": len(deferred_ids),
         "constraintConfidence": float(constraint_scoring.get("constraintConfidence", 0.0) or 0.0),
+        "criticalTopKRatio": critical_top_k_ratio,
     }
 
 
@@ -845,9 +877,16 @@ def run_power118_once(
     model_path: str | Path | None = None,
     metadata_path: str | Path | None = None,
     hybrid_strategy: str = "warm_start",
+    critical_top_k_ratio: float | None = None,
 ) -> Dict[str, Any]:
     start = perf_counter()
     requested_mode, requested_hybrid_strategy = _normalize_power118_modes(run_mode, hybrid_strategy)
+    allowed_reduction_strengths = {0.1, 0.2, 0.4}
+    effective_critical_top_k_ratio = float(critical_top_k_ratio) if critical_top_k_ratio is not None else 0.2
+    if requested_mode == "hybrid_constraint_aware_v3" and effective_critical_top_k_ratio not in allowed_reduction_strengths:
+        raise ValueError(
+            f"Unsupported criticalTopKRatio for hybrid_constraint_aware_v3: {effective_critical_top_k_ratio}"
+        )
 
     module = _load_module()
     data_path = _power118_data()
@@ -1042,12 +1081,13 @@ def run_power118_once(
     if requested_mode == "hybrid_constraint_aware_v3":
         constraint_scoring, constraint_scoring_error = _predict_constraint_scores_with_model(preview, prediction, model_artifacts)
         if constraint_scoring_error is None and constraint_scoring is not None:
-            scoring_plan = _build_constraint_scoring_plan(constraint_scoring)
+            scoring_plan = _build_constraint_scoring_plan(constraint_scoring, critical_top_k_ratio=effective_critical_top_k_ratio)
             critical_ids = scoring_plan["criticalConstraintIds"] or []
             active_ramp_constraint_ids = [constraint_id for constraint_id in critical_ids if str(constraint_id).startswith("ramp:")]
             active_line_constraint_ids = [constraint_id for constraint_id in critical_ids if str(constraint_id).startswith("line:")]
         else:
             scoring_plan["constraintConfidence"] = 0.0
+            scoring_plan["criticalTopKRatio"] = effective_critical_top_k_ratio
 
     constraint_aware_hybrid_used = requested_mode in {"hybrid_constraint_aware_v2", "hybrid_constraint_aware_v3"}
     reduced_solve_applied = bool(fixing_plan["reducedSolveApplied"]) or bool(scoring_plan["criticalConstraintIds"])
@@ -1102,6 +1142,8 @@ def run_power118_once(
                 constraint_aware_reduction_mode=constraint_aware_reduction_mode,
                 reduced_model_validated=reduced_model_validated,
                 reduction_rejected_reason=reduction_rejected_reason,
+                reduction_strength=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
+                critical_top_k_ratio=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
             )
         return _compat_run_payload(
             elapsed_ms=elapsed_ms,
@@ -1127,6 +1169,8 @@ def run_power118_once(
             constraint_aware_reduction_mode=constraint_aware_reduction_mode,
             reduced_model_validated=reduced_model_validated,
             reduction_rejected_reason=reduction_rejected_reason,
+            reduction_strength=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
+            critical_top_k_ratio=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
         )
 
     reduced_solve_fallback_reason = None
@@ -1215,6 +1259,8 @@ def run_power118_once(
                         constraint_aware_reduction_mode=constraint_aware_reduction_mode,
                         reduced_model_validated=reduced_model_validated,
                         reduction_rejected_reason=reduction_rejected_reason,
+                        reduction_strength=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
+                        critical_top_k_ratio=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
                     )
             fallback_result, exact_error = _run_solver(module, data_path, overrides=overrides, time_limit_ms=time_limit_ms)
             if exact_error is None and _is_real_result(fallback_result):
@@ -1245,6 +1291,8 @@ def run_power118_once(
                     constraint_aware_reduction_mode=constraint_aware_reduction_mode,
                     reduced_model_validated=reduced_model_validated,
                     reduction_rejected_reason=reduction_rejected_reason,
+                    reduction_strength=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
+                    critical_top_k_ratio=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
                 )
         elapsed_ms = (perf_counter() - start) * 1000.0
         if prediction.get("feasible"):
@@ -1272,6 +1320,8 @@ def run_power118_once(
                 constraint_aware_reduction_mode=constraint_aware_reduction_mode,
                 reduced_model_validated=reduced_model_validated,
                 reduction_rejected_reason=reduction_rejected_reason,
+                reduction_strength=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
+                critical_top_k_ratio=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
             )
         return _compat_run_payload(
             elapsed_ms=elapsed_ms,
@@ -1299,6 +1349,8 @@ def run_power118_once(
             constraint_aware_reduction_mode=constraint_aware_reduction_mode,
             reduced_model_validated=reduced_model_validated,
             reduction_rejected_reason=reduction_rejected_reason,
+            reduction_strength=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
+            critical_top_k_ratio=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
         )
 
     if result is not None:
@@ -1334,6 +1386,8 @@ def run_power118_once(
             constraint_aware_reduction_mode=constraint_aware_reduction_mode,
             reduced_model_validated=reduced_model_validated,
             reduction_rejected_reason=reduction_rejected_reason,
+            reduction_strength=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
+            critical_top_k_ratio=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
         )
 
     elapsed_ms = float(result.get("solveTimeMs") or (perf_counter() - start) * 1000.0) if result else (perf_counter() - start) * 1000.0
@@ -1362,6 +1416,8 @@ def run_power118_once(
             constraint_aware_reduction_mode=constraint_aware_reduction_mode,
             reduced_model_validated=reduced_model_validated,
             reduction_rejected_reason=reduction_rejected_reason,
+            reduction_strength=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
+            critical_top_k_ratio=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
         )
 
     return _compat_run_payload(
@@ -1389,4 +1445,6 @@ def run_power118_once(
         constraint_aware_reduction_mode=constraint_aware_reduction_mode,
         reduced_model_validated=reduced_model_validated,
         reduction_rejected_reason=reduction_rejected_reason or "hybrid solve returned non-real result",
+        reduction_strength=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
+        critical_top_k_ratio=effective_critical_top_k_ratio if requested_mode == "hybrid_constraint_aware_v3" else None,
     )

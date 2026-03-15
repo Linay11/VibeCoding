@@ -68,7 +68,7 @@ def _synthesized_metadata(model_bundle: dict[str, Any]) -> dict[str, Any]:
     target_names = metadata.get("targetNames") or (
         list(model_bundle.get("commitment_columns", [])) + list(model_bundle.get("dispatch_columns", []))
     )
-    return {
+    synthesized = {
         "modelVersion": metadata.get("modelVersion") or model_bundle.get("modelVersion") or None,
         "featureSchemaVersion": metadata.get("featureSchemaVersion") or model_bundle.get("featureSchemaVersion") or None,
         "trainedAt": metadata.get("trainedAt") or model_bundle.get("trainedAt") or None,
@@ -76,6 +76,31 @@ def _synthesized_metadata(model_bundle: dict[str, Any]) -> dict[str, Any]:
         "targetNames": list(target_names),
         "trainSampleCount": int(metadata.get("trainSampleCount") or model_bundle.get("train_sample_count") or 0),
     }
+    passthrough_keys = [
+        "modelVariant",
+        "featureAblationMode",
+        "featureAblationModeEffective",
+        "constraintTrainingObjective",
+        "constraintTrainingObjectiveRequested",
+        "constraintLabelPreferenceOrder",
+        "exactLabelCoverage",
+        "proxyLabelCoverage",
+        "exactTrainingRatio",
+        "proxyTrainingRatio",
+        "constraintScoringMode",
+        "constraintScoringTargetName",
+        "criticalClassificationThreshold",
+        "constraintCriticalFirstModel",
+        "constraintAuxRankingModelEnabled",
+        "constraintAuxRankingTargetName",
+        "instanceFeatureNames",
+        "abstractFeatureNames",
+        "constraintRepresentationVersion",
+    ]
+    for key in passthrough_keys:
+        if key in metadata:
+            synthesized[key] = metadata[key]
+    return synthesized
 
 
 def load_power118_model_artifacts(
@@ -207,6 +232,20 @@ def _estimate_constraint_confidence(model_bundle: dict[str, Any]) -> float:
     fixing_score = max(0.0, float(metrics.get("constraint_fixing_train_r2", 0.0)))
     confidence = 0.35 + 0.30 * min(summary_score, 1.0) + 0.35 * min(fixing_score, 1.0)
     return float(min(max(confidence, 0.05), 0.99))
+
+
+def _infer_positive_probability(model: Any, feature_array: np.ndarray) -> tuple[np.ndarray, str]:
+    if hasattr(model, "predict_proba"):
+        probabilities = np.asarray(model.predict_proba(feature_array), dtype=float)
+        classes = np.asarray(getattr(model, "classes_", [0, 1]))
+        if probabilities.ndim == 2 and probabilities.shape[1] == 1:
+            positive_value = 1.0 if int(classes[0]) == 1 else 0.0
+            return np.full(probabilities.shape[0], positive_value, dtype=float), "classifier_probability"
+        if probabilities.ndim == 2 and probabilities.shape[1] >= 2:
+            positive_index = int(np.where(classes == 1)[0][0]) if np.any(classes == 1) else probabilities.shape[1] - 1
+            return np.clip(probabilities[:, positive_index], 0.0, 1.0), "classifier_probability"
+    raw_prediction = np.asarray(model.predict(feature_array), dtype=float).reshape(-1)
+    return np.clip(raw_prediction, 0.0, 1.0), "regression_score"
 
 
 def _repair_hourly_schedule(
@@ -473,6 +512,7 @@ def predict_power118_constraint_scores(
     if candidate_frame.empty:
         return {
             "constraintScores": {},
+            "criticalProbabilityByConstraint": {},
             "predictedCriticalConstraints": [],
             "predictedReducibleConstraints": [],
             "constraintConfidence": 0.0,
@@ -480,6 +520,11 @@ def predict_power118_constraint_scores(
             "criticalConstraintCount": 0,
             "deferredConstraintCount": 0,
             "constraintCandidates": [],
+            "criticalScoreSource": "unavailable",
+            "modelObjective": str(metadata.get("constraintTrainingObjective") or "unavailable"),
+            "modelVariant": str(metadata.get("modelVariant") or "unknown"),
+            "featureAblationMode": str(metadata.get("featureAblationMode") or "unknown"),
+            "featureAblationModeEffective": str(metadata.get("featureAblationModeEffective") or metadata.get("featureAblationMode") or "unknown"),
         }
 
     instance_feature_names = list(metadata.get("instanceFeatureNames", []) or model_bundle.get("instance_feature_names", []))
@@ -496,9 +541,32 @@ def predict_power118_constraint_scores(
         raise ValueError("constraint scoring model is unavailable")
 
     X_constraint = candidate_frame[feature_names].to_numpy(dtype=float)
-    predicted_scores = np.asarray(scoring_model.predict(X_constraint), dtype=float)
+    critical_probability, score_source = _infer_positive_probability(scoring_model, X_constraint)
+    model_objective = str(
+        metadata.get("constraintTrainingObjective")
+        or metadata.get("constraintModelObjective")
+        or "legacy-ranking-regression"
+    )
+    critical_threshold = float(
+        metadata.get(
+            "criticalClassificationThreshold",
+            model_bundle.get("critical_classification_threshold", 0.5),
+        )
+        or 0.5
+    )
+    critical_threshold = float(min(max(critical_threshold, 0.0), 1.0))
     candidate_frame = candidate_frame.copy()
-    candidate_frame["predictedScore"] = predicted_scores
+    candidate_frame["criticalProbability"] = np.clip(critical_probability, 0.0, 1.0)
+    candidate_frame["criticalPredictedLabel"] = (
+        candidate_frame["criticalProbability"].astype(float).ge(critical_threshold).astype(float)
+    )
+    candidate_frame["predictedScore"] = candidate_frame["criticalProbability"]
+    candidate_frame["criticalScoreSource"] = score_source
+    candidate_frame["modelObjective"] = model_objective
+    aux_ranking_model = model_bundle.get("constraint_ranking_aux_model")
+    if aux_ranking_model is not None:
+        aux_rank_score = np.asarray(aux_ranking_model.predict(X_constraint), dtype=float).reshape(-1)
+        candidate_frame["predictedRankScoreAux"] = aux_rank_score
     candidate_frame["scoreRank"] = candidate_frame["predictedScore"].rank(method="first", ascending=False)
 
     reducible_frame = candidate_frame.loc[candidate_frame["canBeReduced"] >= 0.5].copy()
@@ -512,6 +580,10 @@ def predict_power118_constraint_scores(
             str(row["constraintId"]): float(row["predictedScore"])
             for _, row in candidate_frame.iterrows()
         },
+        "criticalProbabilityByConstraint": {
+            str(row["constraintId"]): float(row["criticalProbability"])
+            for _, row in candidate_frame.iterrows()
+        },
         "predictedCriticalConstraints": critical_frame.to_dict(orient="records"),
         "predictedReducibleConstraints": deferred_frame.to_dict(orient="records"),
         "constraintConfidence": _estimate_constraint_confidence(model_bundle),
@@ -519,9 +591,22 @@ def predict_power118_constraint_scores(
         "criticalConstraintCount": int(len(critical_frame)),
         "deferredConstraintCount": int(len(deferred_frame)),
         "constraintCandidates": candidate_frame.to_dict(orient="records"),
+        "criticalScoreSource": score_source,
+        "modelObjective": model_objective,
+        "criticalClassificationThreshold": critical_threshold,
+        "modelVariant": str(metadata.get("modelVariant") or "unknown"),
+        "featureAblationMode": str(metadata.get("featureAblationMode") or "unknown"),
+        "featureAblationModeEffective": str(
+            metadata.get("featureAblationModeEffective")
+            or metadata.get("featureAblationMode")
+            or "unknown"
+        ),
         "instanceFeatureNames": instance_feature_names,
         "abstractFeatureNames": abstract_feature_names,
         "constraintRepresentationVersion": metadata.get("constraintRepresentationVersion", "power118-constraint-repr-v3"),
         "constraintScoringModelEnabled": bool(metadata.get("constraintScoringModelEnabled", scoring_model is not None)),
         "constraintScoringMode": metadata.get("constraintScoringMode", "ranking-regression"),
+        "constraintTrainingObjective": metadata.get("constraintTrainingObjective", model_objective),
+        "constraintScoringTargetName": metadata.get("constraintScoringTargetName", "labelRankScore"),
+        "constraintAuxRankingModelEnabled": bool(aux_ranking_model is not None),
     }

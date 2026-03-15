@@ -6,8 +6,13 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+import pandas as pd
 
-from backend_adapter.services.power118_dataset import build_power118_feature_record, build_power118_target_record
+from backend_adapter.services.power118_dataset import (
+    build_power118_constraint_candidate_records,
+    build_power118_feature_record,
+    build_power118_target_record,
+)
 from backend_adapter.services.power118_dataset import (
     build_power118_constraint_label_record,
     build_power118_fixing_label_record,
@@ -15,6 +20,7 @@ from backend_adapter.services.power118_dataset import (
 from backend_adapter.services.power118_ml_model import (
     build_power118_metadata,
     load_power118_model_artifacts,
+    predict_power118_constraint_scores,
     predict_power118_constraints,
     predict_power118_schedule,
     write_power118_metadata_file,
@@ -30,6 +36,24 @@ class _DummyModel:
 
     def predict(self, X):
         return np.repeat(self._output_vector.reshape(1, -1), repeats=len(X), axis=0)
+
+
+class _DummyConstraintClassifier:
+    classes_ = np.asarray([0, 1], dtype=int)
+
+    def predict_proba(self, X):
+        values = np.asarray(X, dtype=float)[:, 0]
+        positive = np.clip(values, 0.0, 1.0)
+        return np.vstack([1.0 - positive, positive]).T
+
+    def score(self, X, y):
+        return 0.5
+
+
+class _DummyConstraintRegressor:
+    def predict(self, X):
+        values = np.asarray(X, dtype=float)[:, 0]
+        return np.clip(values, 0.0, 1.0)
 
 
 def _power_data() -> dict:
@@ -131,6 +155,80 @@ def test_build_power118_constraint_and_fixing_labels() -> None:
     assert "fixCommitment_g1_h2" in fixing_record
 
 
+def test_constraint_candidate_records_support_impact_exact_and_proxy_fallback_labels() -> None:
+    power_data = _power_data()
+    result = {
+        "unitCommitmentByHour": [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
+        "generatorDispatchByHour": [[20.0, 25.0, 30.0], [15.0, 16.0, 17.0]],
+        "constraintDiagnostics": {
+            "slackRecords": {
+                "ramp": [
+                    {
+                        "constraintId": "ramp:g1:h1:up",
+                        "constraintType": "ramp",
+                        "constraintSubtype": "up",
+                        "generatorIndex": 0,
+                        "hourIndex": 0,
+                        "rawSlack": -0.5,
+                        "slack": 0.0,
+                        "active": True,
+                    }
+                ],
+                "generatorLimit": [
+                    {
+                        "constraintId": "genLimit:g1:h1:pMax",
+                        "constraintType": "generatorLimit",
+                        "constraintSubtype": "pMax",
+                        "generatorIndex": 0,
+                        "hourIndex": 0,
+                        "rawSlack": 1.0,
+                        "slack": 1.0,
+                        "active": False,
+                    }
+                ],
+            },
+            "topTightConstraints": {
+                "ramp": [{"constraintId": "ramp:g1:h1:up", "slack": 0.0}],
+                "generatorLimit": [],
+            },
+        },
+    }
+    impact_records = {
+        "ramp:g1:h1:up": {
+            "probeGroupId": "impact-group-01",
+            "probeEvaluated": 1.0,
+            "probeStatus": "TIME_LIMIT",
+            "exactLabelAvailable": 1.0,
+            "labelCriticalExact": 1.0,
+            "labelSource": "impact_exact_group_probe",
+            "impactFeasibilityDelta": 0.0,
+            "impactObjectiveDeltaRatio": 0.01,
+            "impactRuntimeDeltaRatio": 0.2,
+            "impactRuntimeDeltaMs": 120.0,
+            "impactScoreExact": 1.0,
+        }
+    }
+
+    records = build_power118_constraint_candidate_records(
+        power_data=power_data,
+        result=result,
+        sample_id="sample-test",
+        impact_records_by_constraint_id=impact_records,
+    )
+    row_by_id = {str(row["constraintId"]): row for row in records}
+
+    ramp_row = row_by_id["ramp:g1:h1:up"]
+    assert ramp_row["labelCriticalExactAvailable"] == 1.0
+    assert ramp_row["labelCriticalExact"] == 1.0
+    assert ramp_row["labelCritical"] == 1.0
+    assert ramp_row["labelSource"] == "impact_exact_group_probe"
+
+    gen_row = row_by_id["genLimit:g1:h1:pMax"]
+    assert gen_row["labelCriticalExactAvailable"] == 0.0
+    assert gen_row["labelCritical"] == gen_row["labelCriticalProxy"]
+    assert gen_row["labelSource"] == "heuristic_slack_proxy"
+
+
 def test_predict_power118_schedule_repairs_and_scores_prediction() -> None:
     power_data = _power_data()
     feature_record = build_power118_feature_record(power_data)
@@ -180,6 +278,112 @@ def test_predict_power118_constraints_returns_fixing_and_summary_fields() -> Non
     assert prediction["predictedActiveConstraintCount"] == 12
     assert prediction["constraintConfidence"] > 0.0
     assert len(prediction["predictedFixedCommitmentMaskScores"]) == 2
+
+
+def test_predict_power118_constraint_scores_outputs_critical_first_fields(monkeypatch) -> None:
+    candidate_frame = pd.DataFrame(
+        [
+            {
+                "constraintId": "ramp:g1:h1:up",
+                "canBeReduced": 1.0,
+                "inst_hourLoad": 0.9,
+                "abs_constraintTypeCode": 1.0,
+            },
+            {
+                "constraintId": "line:g1:h1:absCap",
+                "canBeReduced": 1.0,
+                "inst_hourLoad": 0.2,
+                "abs_constraintTypeCode": 2.0,
+            },
+            {
+                "constraintId": "balance:b1:h1",
+                "canBeReduced": 0.0,
+                "inst_hourLoad": 0.4,
+                "abs_constraintTypeCode": 3.0,
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "backend_adapter.services.power118_ml_model.build_power118_constraint_candidate_frame",
+        lambda power_data, schedule_prediction, sample_id: candidate_frame.copy(),
+    )
+    model_bundle = {
+        "constraint_scoring_model": _DummyConstraintClassifier(),
+        "constraint_ranking_aux_model": _DummyConstraintRegressor(),
+        "instance_feature_names": ["inst_hourLoad"],
+        "abstract_feature_names": ["abs_constraintTypeCode"],
+    }
+    metadata = {
+        "instanceFeatureNames": ["inst_hourLoad"],
+        "abstractFeatureNames": ["abs_constraintTypeCode"],
+        "constraintTrainingObjective": "mixed",
+        "constraintScoringMode": "critical-first-classification",
+        "criticalClassificationThreshold": 0.5,
+    }
+
+    prediction = predict_power118_constraint_scores(
+        power_data={},
+        schedule_prediction={},
+        model_bundle=model_bundle,
+        metadata=metadata,
+    )
+
+    assert prediction["criticalScoreSource"] == "classifier_probability"
+    assert prediction["modelObjective"] == "mixed"
+    assert prediction["constraintAuxRankingModelEnabled"] is True
+    assert prediction["criticalConstraintCount"] >= 1
+    candidates = prediction["constraintCandidates"]
+    assert all("criticalProbability" in row for row in candidates)
+    assert all("criticalPredictedLabel" in row for row in candidates)
+    assert all("criticalScoreSource" in row for row in candidates)
+    assert all("modelObjective" in row for row in candidates)
+    assert all(abs(float(row["predictedScore"]) - float(row["criticalProbability"])) < 1e-9 for row in candidates)
+
+
+def test_predict_power118_constraint_scores_keeps_legacy_regression_compat(monkeypatch) -> None:
+    candidate_frame = pd.DataFrame(
+        [
+            {
+                "constraintId": "ramp:g1:h1:up",
+                "canBeReduced": 1.0,
+                "inst_hourLoad": 0.7,
+                "abs_constraintTypeCode": 1.0,
+            },
+            {
+                "constraintId": "line:g1:h1:absCap",
+                "canBeReduced": 1.0,
+                "inst_hourLoad": 0.3,
+                "abs_constraintTypeCode": 2.0,
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "backend_adapter.services.power118_ml_model.build_power118_constraint_candidate_frame",
+        lambda power_data, schedule_prediction, sample_id: candidate_frame.copy(),
+    )
+    model_bundle = {
+        "constraint_scoring_model": _DummyConstraintRegressor(),
+        "instance_feature_names": ["inst_hourLoad"],
+        "abstract_feature_names": ["abs_constraintTypeCode"],
+    }
+    metadata = {
+        "instanceFeatureNames": ["inst_hourLoad"],
+        "abstractFeatureNames": ["abs_constraintTypeCode"],
+    }
+
+    prediction = predict_power118_constraint_scores(
+        power_data={},
+        schedule_prediction={},
+        model_bundle=model_bundle,
+        metadata=metadata,
+    )
+
+    assert prediction["criticalScoreSource"] == "regression_score"
+    assert prediction["modelObjective"] == "legacy-ranking-regression"
+    assert prediction["constraintScoringMode"] == "ranking-regression"
+    assert prediction["constraintScores"]
+    assert prediction["criticalProbabilityByConstraint"]
+    assert all("criticalProbability" in row for row in prediction["constraintCandidates"])
 
 
 def test_validate_power118_feature_schema_reports_mismatch() -> None:
@@ -234,8 +438,20 @@ def test_eval_helpers_build_records_and_summary() -> None:
 
     assert record_ml["objectiveGapVsExact"] == 0.1
     assert record_ml["usedModelVersion"] == "power118-baseline-v1"
+    assert record_ml["fallbackOccurred"] is False
+    assert record_ml["isRealSolverResult"] is False
+    assert record_ml["exactBaselineAvailable"] is True
+    assert "usedConstraintReduction" in record_ml
+    assert "constraintReductionFamily" in record_ml
+    assert "criticalSelectionPrecision" in record_ml
+    assert record_ml["criticalSelectionPrecision"] is None
+    assert record_ml["criticalSelectionRecall"] is None
     assert len(summary) == 2
-    assert json.loads(json.dumps(summary))[0]["runCount"] == 1
+    normalized_summary = json.loads(json.dumps(summary))
+    assert normalized_summary[0]["runCount"] == 1
+    assert "averageConstraintReductionRate" in normalized_summary[0]
+    assert "noFallbackFeasibilityRate" in normalized_summary[0]
+    assert "noFallbackRuntimeGainVsExact" in normalized_summary[0]
 
 
 def test_load_power118_model_artifacts_reads_joblib_and_metadata(tmp_path) -> None:

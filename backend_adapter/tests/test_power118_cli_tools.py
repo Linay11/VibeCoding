@@ -27,6 +27,27 @@ class _FakeExtraTreesRegressor:
         return 0.5
 
 
+class _FakeExtraTreesClassifier:
+    def __init__(self, *args, **kwargs):
+        self._majority = 0
+        self.classes_ = [0, 1]
+
+    def fit(self, X, y, sample_weight=None):
+        frame = pd.Series(y)
+        self._majority = int(frame.mean() >= 0.5)
+        return self
+
+    def predict(self, X):
+        return [self._majority for _ in range(len(X))]
+
+    def predict_proba(self, X):
+        prob_one = 0.8 if self._majority == 1 else 0.2
+        return [[1.0 - prob_one, prob_one] for _ in range(len(X))]
+
+    def score(self, X, y):
+        return 0.6
+
+
 def test_build_dataset_writes_output_dir_and_summary(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         dataset_script,
@@ -111,6 +132,7 @@ def test_train_model_writes_versioned_dir_without_publishing_defaults(monkeypatc
     fake_sklearn = types.ModuleType("sklearn")
     fake_ensemble = types.ModuleType("sklearn.ensemble")
     fake_ensemble.ExtraTreesRegressor = _FakeExtraTreesRegressor
+    fake_ensemble.ExtraTreesClassifier = _FakeExtraTreesClassifier
     monkeypatch.setitem(sys.modules, "sklearn", fake_sklearn)
     monkeypatch.setitem(sys.modules, "sklearn.ensemble", fake_ensemble)
 
@@ -146,6 +168,10 @@ def test_train_model_writes_versioned_dir_without_publishing_defaults(monkeypatc
                         "inst_slack": 0.1,
                         "abs_constraintTypeCode": 1.0,
                         "abs_hourNorm": 0.1,
+                        "labelCritical": 1.0,
+                        "labelCriticalExact": 1.0,
+                        "labelCriticalExactAvailable": 1.0,
+                        "labelCriticalProxy": 1.0,
                         "labelRankScore": 0.9,
                     },
                     {
@@ -156,6 +182,10 @@ def test_train_model_writes_versioned_dir_without_publishing_defaults(monkeypatc
                         "inst_slack": 0.2,
                         "abs_constraintTypeCode": 2.0,
                         "abs_hourNorm": 0.2,
+                        "labelCritical": 0.0,
+                        "labelCriticalExact": 0.0,
+                        "labelCriticalExactAvailable": 0.0,
+                        "labelCriticalProxy": 0.0,
                         "labelRankScore": 0.8,
                     },
                 ]
@@ -185,8 +215,93 @@ def test_train_model_writes_versioned_dir_without_publishing_defaults(monkeypatc
     assert metadata["modelVersion"] == "v-test"
     assert model_bundle["featureSchemaVersion"] == "schema-test"
     assert metadata["constraintScoringModelEnabled"] is True
+    assert metadata["constraintScoringTargetName"] == "labelCritical"
+    assert metadata["constraintTrainingObjective"] == "mixed"
+    assert metadata["constraintTrainingObjectiveRequested"] == "auto"
+    assert metadata["modelVariant"] == "default"
+    assert metadata["featureAblationMode"] == "inst+abs"
+    assert metadata["featureAblationModeEffective"] == "inst+abs"
+    assert metadata["exactLabelCoverage"] == 0.5
+    assert metadata["proxyLabelCoverage"] == 1.0
+    assert metadata["exactTrainingRatio"] == 0.5
+    assert metadata["proxyTrainingRatio"] == 0.5
+    assert metadata["constraintLabelPreferenceOrder"] == ["labelCriticalExact", "labelCriticalProxy", "labelCritical"]
+    assert metadata["constraintScoringMode"] == "critical-first-classification"
+    assert metadata["constraintAuxRankingModelEnabled"] is True
     assert metadata["instanceFeatureNames"] == ["inst_hourLoad", "inst_slack"]
     assert metadata["abstractFeatureNames"] == ["abs_constraintTypeCode", "abs_hourNorm"]
+    assert training_summary["modelVariant"] == "default"
+    assert training_summary["featureAblationMode"] == "inst+abs"
+    assert training_summary["featureAblationModeEffective"] == "inst+abs"
+
+
+def test_constraint_training_objective_selection_logic() -> None:
+    candidates = pd.DataFrame(
+        [
+            {
+                "labelCriticalExactAvailable": 1.0,
+                "labelCriticalExact": 1.0,
+                "labelCriticalProxy": 1.0,
+                "labelCritical": 1.0,
+                "labelRankScore": 0.9,
+            },
+            {
+                "labelCriticalExactAvailable": 0.0,
+                "labelCriticalExact": 0.0,
+                "labelCriticalProxy": 0.0,
+                "labelCritical": 0.0,
+                "labelRankScore": 0.1,
+            },
+            {
+                "labelCriticalExactAvailable": 0.0,
+                "labelCriticalExact": 0.0,
+                "labelCriticalProxy": 1.0,
+                "labelCritical": 1.0,
+                "labelRankScore": 0.8,
+            },
+        ]
+    )
+
+    auto_info = train_script._resolve_constraint_training_targets(candidates, requested_objective="auto")
+    proxy_only_info = train_script._resolve_constraint_training_targets(candidates, requested_objective="proxy-only")
+    exact_priority_info = train_script._resolve_constraint_training_targets(
+        candidates,
+        requested_objective="exact-priority",
+        exact_priority_weight=3.0,
+    )
+
+    assert auto_info["resolvedObjective"] == "mixed"
+    assert proxy_only_info["resolvedObjective"] == "proxy-only"
+    assert exact_priority_info["resolvedObjective"] == "exact-priority"
+    assert exact_priority_info["exactLabelCoverage"] == (1.0 / 3.0)
+    assert exact_priority_info["proxyLabelCoverage"] == 1.0
+    assert max(exact_priority_info["sampleWeights"]) == 3.0
+    assert "labelCriticalExact" in exact_priority_info["trainingLabelSourceCounts"]
+
+
+def test_constraint_feature_ablation_mode_selection_logic() -> None:
+    info_inst_only = train_script._resolve_constraint_feature_subset(
+        instance_feature_names=["inst_a", "inst_b"],
+        abstract_feature_names=["abs_a"],
+        requested_mode="inst-only",
+    )
+    info_abs_only = train_script._resolve_constraint_feature_subset(
+        instance_feature_names=["inst_a"],
+        abstract_feature_names=["abs_a", "abs_b"],
+        requested_mode="abs-only",
+    )
+    info_full = train_script._resolve_constraint_feature_subset(
+        instance_feature_names=["inst_a"],
+        abstract_feature_names=["abs_a"],
+        requested_mode="inst+abs",
+    )
+
+    assert info_inst_only["effectiveMode"] == "inst-only"
+    assert info_inst_only["featureNames"] == ["inst_a", "inst_b"]
+    assert info_abs_only["effectiveMode"] == "abs-only"
+    assert info_abs_only["featureNames"] == ["abs_a", "abs_b"]
+    assert info_full["effectiveMode"] == "inst+abs"
+    assert info_full["featureNames"] == ["inst_a", "abs_a"]
 
 
 def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None:
@@ -232,7 +347,7 @@ def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None
             "hybrid": {
                 "solverModeUsed": "exact" if kwargs.get("hybrid_strategy") == "warm_start" else "hybrid",
                 "adapterMode": "real",
-                "runtimeMs": 140.0 if kwargs.get("hybrid_strategy") == "warm_start" else 95.0 if kwargs.get("hybrid_strategy") == "constraint_aware_v2" else 80.0,
+                "runtimeMs": 140.0 if kwargs.get("hybrid_strategy") == "warm_start" else 95.0 if kwargs.get("hybrid_strategy") == "constraint_aware_v2" else 120.0 - (kwargs.get("critical_top_k_ratio", 0.2) * 100.0),
                 "objectiveValue": 52.0 if kwargs.get("hybrid_strategy") == "warm_start" else 51.5 if kwargs.get("hybrid_strategy") == "constraint_aware_v2" else 51.0,
                 "feasible": True,
                 "repairApplied": True,
@@ -251,13 +366,15 @@ def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None
                 "reducedSolveFallbackReason": None,
                 "hybridStrategyUsed": kwargs.get("hybrid_strategy"),
                 "constraintScoringUsed": kwargs.get("hybrid_strategy") == "constraint_aware_v3",
-                "criticalConstraintCount": 7 if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else 0,
-                "deferredConstraintCount": 12 if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else 0,
+                "criticalConstraintCount": int(round(20 * (kwargs.get("critical_top_k_ratio", 0.2) or 0.2))) if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else 0,
+                "deferredConstraintCount": 20 - int(round(20 * (kwargs.get("critical_top_k_ratio", 0.2) or 0.2))) if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else 0,
                 "constraintReactivationCount": 1 if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else 0,
                 "stagedSolveRounds": 2 if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else 1,
                 "constraintAwareReductionMode": "critical_constraint_subset" if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else "fixed_commitment_mask" if kwargs.get("hybrid_strategy") == "constraint_aware_v2" else "warm_start_only",
                 "reducedModelValidated": kwargs.get("hybrid_strategy") == "constraint_aware_v3",
                 "reductionRejectedReason": None,
+                "reductionStrength": kwargs.get("critical_top_k_ratio") if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else None,
+                "criticalTopKRatio": kwargs.get("critical_top_k_ratio") if kwargs.get("hybrid_strategy") == "constraint_aware_v3" else None,
             },
             "ml": {
                 "solverModeUsed": "ml",
@@ -297,7 +414,18 @@ def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None
         require_exact_baseline=True,
     )
 
-    assert len(records) == 10
+    assert len(records) == 14
+    assert all("usedConstraintReduction" in record for record in records)
+    assert all("constraintReductionRate" in record for record in records)
+    assert all("exactBaselineAvailable" in record for record in records)
+    assert all("fallbackOccurred" in record for record in records)
+    assert all("isRealSolverResult" in record for record in records)
+    v3_records = [record for record in records if record["requestedMode"] == "hybrid_constraint_aware_v3"]
+    assert v3_records
+    assert all(record["criticalPredictionAvailable"] is True for record in v3_records)
+    assert all(record["criticalExactLabelAvailable"] is False for record in v3_records)
+    assert all(record["criticalSelectionPrecision"] is None for record in v3_records)
+    assert all(record["criticalSelectionRecall"] is None for record in v3_records)
     assert summary_payload["evaluation"]["exactRealBaselineAvailable"] is True
     exact_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "exact")
     hybrid_warm_summary = next(row for row in summary_payload["modes"] if row["requestedMode"] == "hybrid_warm_start")
@@ -315,14 +443,156 @@ def test_evaluate_modes_writes_summary_and_report(monkeypatch, tmp_path) -> None
     assert hybrid_warm_summary["objectiveGapVsExact"] is not None
     assert hybrid_fixing_summary["solverModeUsedCounts"]["hybrid"] == 2
     assert hybrid_fixing_summary["fallbackCount"] == 0
-    assert hybrid_scoring_summary["solverModeUsedCounts"]["hybrid"] == 2
+    assert hybrid_scoring_summary["solverModeUsedCounts"]["hybrid"] == 6
     assert hybrid_scoring_summary["criticalConstraintCount"] if "criticalConstraintCount" in hybrid_scoring_summary else True
     assert hybrid_scoring_summary["fallbackCount"] == 0
+    assert "averageConstraintReductionRate" in hybrid_scoring_summary
+    assert "noFallbackFeasibilityRate" in hybrid_scoring_summary
+    assert "noFallbackRuntimeGainVsExact" in hybrid_scoring_summary
+    assert hybrid_scoring_summary["criticalPrecisionSampleCount"] == 0
+    assert hybrid_scoring_summary["criticalRecallSampleCount"] == 0
+    assert summary_payload["v3ReductionTradeoff"]
+    assert sorted(item["reductionStrength"] for item in summary_payload["v3ReductionTradeoff"]) == [0.1, 0.2, 0.4]
     assert summary_payload["evaluation"]["hybridFallbackReasonCounts"]["hybrid warm-start solve failed: numeric issue"] == 2
     assert ml_summary["dispatchMAE"] is not None
     assert (Path(tmp_path) / "eval" / "summary.json").exists()
     assert report_path.exists()
-    assert "Hybrid fallback reason distribution" in report_path.read_text(encoding="utf-8")
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "Hybrid fallback reason distribution" in report_text
+    assert "Ablation" in report_text
+    assert "Reduction Strength Tradeoff" in report_text
+
+
+def test_evaluate_ablation_variants_writes_variant_summary_and_objective_table(monkeypatch, tmp_path) -> None:
+    def fake_load_artifacts(model_path=None, metadata_path=None):
+        suffix = Path(model_path).name if model_path is not None else "unknown"
+        objective_map = {
+            "proxy.joblib": "proxy-only",
+            "mixed.joblib": "mixed",
+            "exact.joblib": "exact-priority",
+        }
+        objective = objective_map.get(suffix, "mixed")
+        return {
+            "loadSuccess": True,
+            "loadFailureReason": None,
+            "loadStatus": "loaded",
+            "modelPath": str(model_path) if model_path is not None else "model.joblib",
+            "metadataPath": str(metadata_path) if metadata_path is not None else "metadata.json",
+            "modelVersion": "power118-baseline-v1",
+            "featureSchemaVersion": "power118-feature-schema-v1",
+            "metadata": {
+                "modelVariant": suffix.replace(".joblib", ""),
+                "constraintTrainingObjective": objective,
+                "featureAblationMode": "inst+abs",
+                "exactLabelCoverage": 0.4,
+                "proxyLabelCoverage": 1.0,
+                "criticalClassificationThreshold": 0.5,
+                "constraintAuxRankingModelEnabled": True,
+            },
+        }
+
+    def fake_evaluate_modes(
+        num_cases,
+        seed,
+        output_dir,
+        time_limit_ms,
+        modes,
+        model_path=None,
+        metadata_path=None,
+        require_exact_baseline=False,
+        variant_overrides=None,
+    ):
+        exact_run = {
+            "adapterMode": "real",
+            "solverModeUsed": "exact",
+            "feasible": True,
+            "hasIncumbent": True,
+            "optimal": False,
+            "terminatedByTimeLimit": True,
+            "runtimeMs": 100.0,
+            "objectiveValue": 50.0,
+            "requestedMode": "exact",
+        }
+        hybrid_run = {
+            "adapterMode": "real",
+            "solverModeUsed": "hybrid",
+            "feasible": True,
+            "hasIncumbent": True,
+            "optimal": False,
+            "terminatedByTimeLimit": True,
+            "runtimeMs": 80.0,
+            "objectiveValue": 51.0,
+            "requestedMode": "hybrid_constraint_aware_v3",
+            "constraintScoringUsed": True,
+            "criticalConstraintCount": 4,
+            "deferredConstraintCount": 16,
+            "constraintAwareReductionMode": "critical_constraint_subset",
+        }
+        record = eval_script.build_eval_record("case-00000", "hybrid_constraint_aware_v3", hybrid_run, exact_run)
+        summary_rows = eval_script.summarize_eval_records([record])
+        summary_payload = {
+            "evaluation": {"exactRealBaselineAvailable": True},
+            "modes": summary_rows,
+        }
+        report_path = Path(output_dir) / "report.md"
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        report_path.write_text("variant report", encoding="utf-8")
+        return [record], summary_payload, report_path
+
+    monkeypatch.setattr(eval_script, "load_power118_model_artifacts", fake_load_artifacts)
+    monkeypatch.setattr(eval_script, "evaluate_modes", fake_evaluate_modes)
+
+    variant_specs = [
+        {
+            "modelVariant": "proxy",
+            "modelPath": Path(tmp_path) / "proxy.joblib",
+            "metadataPath": Path(tmp_path) / "proxy.json",
+            "constraintTrainingObjective": "proxy-only",
+            "featureAblationMode": "inst+abs",
+            "runEnabled": True,
+        },
+        {
+            "modelVariant": "exact",
+            "modelPath": Path(tmp_path) / "exact.joblib",
+            "metadataPath": Path(tmp_path) / "exact.json",
+            "constraintTrainingObjective": "exact-priority",
+            "featureAblationMode": "inst+abs",
+            "runEnabled": False,
+        },
+    ]
+
+    records, summary_payload, report_path = eval_script.evaluate_ablation_variants(
+        num_cases=1,
+        seed=7,
+        output_dir=Path(tmp_path) / "ablation",
+        time_limit_ms=None,
+        modes=["hybrid_constraint_aware_v3"],
+        variant_specs=variant_specs,
+        require_exact_baseline=False,
+    )
+
+    assert records
+    assert summary_payload["evaluation"]["variantMode"] == "multi"
+    assert summary_payload["evaluation"]["configuredVariantCount"] == 2
+    assert summary_payload["evaluation"]["ranVariantCount"] == 1
+    assert "variants" in summary_payload
+    assert any(row["status"] == "ran" for row in summary_payload["variants"])
+    assert any(row["status"] == "configured_not_run" for row in summary_payload["variants"])
+    assert "objectiveAblation" in summary_payload
+    assert len(summary_payload["objectiveAblation"]) == 3
+    objective_map = {
+        str(row["constraintTrainingObjective"]): row
+        for row in summary_payload["objectiveAblation"]
+    }
+    assert objective_map["proxy-only"]["status"] == "ran"
+    assert objective_map["exact-priority"]["status"] == "configured_not_run"
+    assert "representationAblation" in summary_payload
+    assert len(summary_payload["representationAblation"]) == 3
+    assert "hybridFallbackReasonCounts" in summary_payload["evaluation"]
+    assert report_path.exists()
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "Objective Ablation" in report_text
+    assert "Representation Ablation" in report_text
 
 
 def test_exact_baseline_availability_helpers_cover_time_limit_cases() -> None:

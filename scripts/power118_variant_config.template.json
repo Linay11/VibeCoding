@@ -1,0 +1,37 @@
+{
+  "variants": [
+    {
+      "modelVariant": "proxy-only__inst-plus-abs",
+      "modelPath": "./models/proxy-only__inst-plus-abs/power118_ml_model.joblib",
+      "metadataPath": "./models/proxy-only__inst-plus-abs/power118_ml_metadata.json",
+      "constraintTrainingObjective": "proxy-only",
+      "featureAblationMode": "inst+abs",
+      "criticalClassificationThreshold": 0.5,
+      "constraintAuxRankingModelEnabled": true,
+      "runEnabled": true,
+      "note": "Critical-first proxy-only objective with inst+abs features."
+    },
+    {
+      "modelVariant": "mixed__inst-plus-abs",
+      "modelPath": "./models/mixed__inst-plus-abs/power118_ml_model.joblib",
+      "metadataPath": "./models/mixed__inst-plus-abs/power118_ml_metadata.json",
+      "constraintTrainingObjective": "mixed",
+      "featureAblationMode": "inst+abs",
+      "criticalClassificationThreshold": 0.5,
+      "constraintAuxRankingModelEnabled": true,
+      "runEnabled": true,
+      "note": "Critical-first mixed objective with inst+abs features."
+    },
+    {
+      "modelVariant": "exact-priority__inst-plus-abs",
+      "modelPath": "./models/exact-priority__inst-plus-abs/power118_ml_model.joblib",
+      "metadataPath": "./models/exact-priority__inst-plus-abs/power118_ml_metadata.json",
+      "constraintTrainingObjective": "exact-priority",
+      "featureAblationMode": "inst+abs",
+      "criticalClassificationThreshold": 0.5,
+      "constraintAuxRankingModelEnabled": true,
+      "runEnabled": true,
+      "note": "Critical-first exact-priority objective with inst+abs features."
+    }
+  ]
+}
