@@ -340,13 +340,62 @@ def test_predict_power118_constraint_scores_outputs_critical_first_fields(monkey
     assert all(abs(float(row["predictedScore"]) - float(row["criticalProbability"])) < 1e-9 for row in candidates)
 
 
+def test_predict_power118_constraint_scores_applies_nan_fill_and_dropped_columns(monkeypatch) -> None:
+    candidate_frame = pd.DataFrame(
+        [
+            {
+                "constraintId": "ramp:g1:h1:up",
+                "canBeReduced": 1.0,
+                "inst_hourLoad": float("nan"),
+                "abs_constraintTypeCode": float("nan"),
+            },
+            {
+                "constraintId": "line:g1:h1:absCap",
+                "canBeReduced": 1.0,
+                "inst_hourLoad": 0.4,
+                "abs_constraintTypeCode": float("nan"),
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "backend_adapter.services.power118_ml_model.build_power118_constraint_candidate_frame",
+        lambda power_data, schedule_prediction, sample_id: candidate_frame.copy(),
+    )
+    model_bundle = {
+        "constraint_scoring_model": _DummyConstraintClassifier(),
+        "constraint_ranking_aux_model": _DummyConstraintRegressor(),
+        "instance_feature_names": ["inst_hourLoad"],
+        "abstract_feature_names": ["abs_constraintTypeCode"],
+    }
+    metadata = {
+        "instanceFeatureNames": ["inst_hourLoad"],
+        "abstractFeatureNames": ["abs_constraintTypeCode"],
+        "constraintFeatureDroppedColumns": ["abs_constraintTypeCode"],
+        "constraintFeatureNaNFillStrategy": "fillna(0.0)",
+    }
+
+    prediction = predict_power118_constraint_scores(
+        power_data={},
+        schedule_prediction={},
+        model_bundle=model_bundle,
+        metadata=metadata,
+    )
+
+    candidates = prediction["constraintCandidates"]
+    assert float(candidates[0]["predictedScore"]) == 0.0
+    assert prediction["constraintFeatureNaNFillStrategy"] == "fillna(0.0)"
+    assert prediction["constraintFeatureDroppedColumns"] == ["abs_constraintTypeCode"]
+    assert prediction["constraintFeatureNaNCountBefore"] == 1
+    assert prediction["constraintFeatureNaNCountAfter"] == 0
+
+
 def test_predict_power118_constraint_scores_keeps_legacy_regression_compat(monkeypatch) -> None:
     candidate_frame = pd.DataFrame(
         [
             {
                 "constraintId": "ramp:g1:h1:up",
                 "canBeReduced": 1.0,
-                "inst_hourLoad": 0.7,
+                "inst_hourLoad": float("nan"),
                 "abs_constraintTypeCode": 1.0,
             },
             {
@@ -384,6 +433,7 @@ def test_predict_power118_constraint_scores_keeps_legacy_regression_compat(monke
     assert prediction["constraintScores"]
     assert prediction["criticalProbabilityByConstraint"]
     assert all("criticalProbability" in row for row in prediction["constraintCandidates"])
+    assert float(prediction["constraintCandidates"][0]["predictedScore"]) == 0.0
 
 
 def test_validate_power118_feature_schema_reports_mismatch() -> None:

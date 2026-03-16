@@ -96,10 +96,26 @@ def _synthesized_metadata(model_bundle: dict[str, Any]) -> dict[str, Any]:
         "instanceFeatureNames",
         "abstractFeatureNames",
         "constraintRepresentationVersion",
+        "constraintFeatureNaNColumns",
+        "constraintFeatureNaNFillStrategy",
+        "constraintFeatureDroppedColumns",
+        "constraintFeatureNaNCountBefore",
+        "constraintFeatureNaNCountAfter",
     ]
     for key in passthrough_keys:
         if key in metadata:
             synthesized[key] = metadata[key]
+
+    bundle_to_metadata_keys = {
+        "constraint_feature_nan_columns": "constraintFeatureNaNColumns",
+        "constraint_feature_nan_fill_strategy": "constraintFeatureNaNFillStrategy",
+        "constraint_feature_dropped_columns": "constraintFeatureDroppedColumns",
+        "constraint_feature_nan_count_before": "constraintFeatureNaNCountBefore",
+        "constraint_feature_nan_count_after": "constraintFeatureNaNCountAfter",
+    }
+    for bundle_key, metadata_key in bundle_to_metadata_keys.items():
+        if metadata_key not in synthesized and bundle_key in model_bundle:
+            synthesized[metadata_key] = model_bundle.get(bundle_key)
     return synthesized
 
 
@@ -246,6 +262,56 @@ def _infer_positive_probability(model: Any, feature_array: np.ndarray) -> tuple[
             return np.clip(probabilities[:, positive_index], 0.0, 1.0), "classifier_probability"
     raw_prediction = np.asarray(model.predict(feature_array), dtype=float).reshape(-1)
     return np.clip(raw_prediction, 0.0, 1.0), "regression_score"
+
+
+def _resolve_nan_fill_strategy(
+    metadata: dict[str, Any],
+    model_bundle: dict[str, Any],
+) -> tuple[str, float]:
+    strategy = metadata.get("constraintFeatureNaNFillStrategy")
+    if strategy is None:
+        strategy = model_bundle.get("constraint_feature_nan_fill_strategy")
+    strategy_text = str(strategy or "fillna(0.0)")
+    if strategy_text == "fillna(0.0)":
+        return strategy_text, 0.0
+    # Backward-compatible fallback for unknown strategy tokens.
+    return "fillna(0.0)", 0.0
+
+
+def _prepare_constraint_inference_features(
+    candidate_frame: Any,
+    feature_names: list[str],
+    metadata: dict[str, Any],
+    model_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    dropped_columns = metadata.get("constraintFeatureDroppedColumns")
+    if dropped_columns is None:
+        dropped_columns = model_bundle.get("constraint_feature_dropped_columns", [])
+    dropped_column_set = {str(name) for name in list(dropped_columns or [])}
+
+    effective_feature_names = [
+        str(name) for name in feature_names
+        if str(name) not in dropped_column_set
+    ]
+    if not effective_feature_names:
+        raise ValueError("constraint scoring model has no usable features after applying dropped columns")
+    if not set(effective_feature_names).issubset(set(candidate_frame.columns)):
+        missing = sorted(set(effective_feature_names).difference(set(candidate_frame.columns)))
+        raise ValueError(f"constraint candidate frame is missing features: {missing[:5]}")
+
+    fill_strategy, fill_value = _resolve_nan_fill_strategy(metadata=metadata, model_bundle=model_bundle)
+    feature_frame = candidate_frame[effective_feature_names].copy()
+    nan_count_before = int(feature_frame.isna().sum().sum())
+    feature_frame = feature_frame.fillna(fill_value)
+    nan_count_after = int(feature_frame.isna().sum().sum())
+    return {
+        "featureNames": effective_feature_names,
+        "featureArray": feature_frame.to_numpy(dtype=float),
+        "nanFillStrategy": fill_strategy,
+        "nanCountBefore": nan_count_before,
+        "nanCountAfter": nan_count_after,
+        "droppedColumns": sorted(dropped_column_set),
+    }
 
 
 def _repair_hourly_schedule(
@@ -525,6 +591,16 @@ def predict_power118_constraint_scores(
             "modelVariant": str(metadata.get("modelVariant") or "unknown"),
             "featureAblationMode": str(metadata.get("featureAblationMode") or "unknown"),
             "featureAblationModeEffective": str(metadata.get("featureAblationModeEffective") or metadata.get("featureAblationMode") or "unknown"),
+            "constraintFeatureNaNFillStrategy": str(
+                metadata.get("constraintFeatureNaNFillStrategy")
+                or model_bundle.get("constraint_feature_nan_fill_strategy")
+                or "fillna(0.0)"
+            ),
+            "constraintFeatureDroppedColumns": list(
+                metadata.get("constraintFeatureDroppedColumns")
+                or model_bundle.get("constraint_feature_dropped_columns")
+                or []
+            ),
         }
 
     instance_feature_names = list(metadata.get("instanceFeatureNames", []) or model_bundle.get("instance_feature_names", []))
@@ -532,15 +608,19 @@ def predict_power118_constraint_scores(
     feature_names = instance_feature_names + abstract_feature_names
     if not feature_names:
         raise ValueError("constraint scoring model is missing instance/abstract feature names")
-    if not set(feature_names).issubset(set(candidate_frame.columns)):
-        missing = sorted(set(feature_names).difference(set(candidate_frame.columns)))
-        raise ValueError(f"constraint candidate frame is missing features: {missing[:5]}")
 
     scoring_model = model_bundle.get("constraint_scoring_model")
     if scoring_model is None:
         raise ValueError("constraint scoring model is unavailable")
 
-    X_constraint = candidate_frame[feature_names].to_numpy(dtype=float)
+    prepared_feature_info = _prepare_constraint_inference_features(
+        candidate_frame=candidate_frame,
+        feature_names=feature_names,
+        metadata=metadata,
+        model_bundle=model_bundle,
+    )
+    effective_feature_names = list(prepared_feature_info["featureNames"])
+    X_constraint = np.asarray(prepared_feature_info["featureArray"], dtype=float)
     critical_probability, score_source = _infer_positive_probability(scoring_model, X_constraint)
     model_objective = str(
         metadata.get("constraintTrainingObjective")
@@ -601,12 +681,22 @@ def predict_power118_constraint_scores(
             or metadata.get("featureAblationMode")
             or "unknown"
         ),
-        "instanceFeatureNames": instance_feature_names,
-        "abstractFeatureNames": abstract_feature_names,
+        "instanceFeatureNames": [
+            str(name) for name in instance_feature_names
+            if str(name) in set(effective_feature_names)
+        ],
+        "abstractFeatureNames": [
+            str(name) for name in abstract_feature_names
+            if str(name) in set(effective_feature_names)
+        ],
         "constraintRepresentationVersion": metadata.get("constraintRepresentationVersion", "power118-constraint-repr-v3"),
         "constraintScoringModelEnabled": bool(metadata.get("constraintScoringModelEnabled", scoring_model is not None)),
         "constraintScoringMode": metadata.get("constraintScoringMode", "ranking-regression"),
         "constraintTrainingObjective": metadata.get("constraintTrainingObjective", model_objective),
         "constraintScoringTargetName": metadata.get("constraintScoringTargetName", "labelRankScore"),
         "constraintAuxRankingModelEnabled": bool(aux_ranking_model is not None),
+        "constraintFeatureNaNFillStrategy": str(prepared_feature_info["nanFillStrategy"]),
+        "constraintFeatureDroppedColumns": list(prepared_feature_info["droppedColumns"]),
+        "constraintFeatureNaNCountBefore": int(prepared_feature_info["nanCountBefore"]),
+        "constraintFeatureNaNCountAfter": int(prepared_feature_info["nanCountAfter"]),
     }

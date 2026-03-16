@@ -38,6 +38,7 @@ DEFAULT_EXACT_PRIORITY_WEIGHT = 2.0
 DEFAULT_CRITICAL_CLASSIFICATION_THRESHOLD = 0.5
 DEFAULT_MODEL_VARIANT = "default"
 DEFAULT_FEATURE_ABLATION_MODE = "inst+abs"
+DEFAULT_CONSTRAINT_FEATURE_NAN_FILL_STRATEGY = "fillna(0.0)"
 
 
 def _utc_ts() -> str:
@@ -236,6 +237,52 @@ def _resolve_constraint_feature_subset(
     }
 
 
+def _prepare_constraint_feature_frame(
+    constraint_candidates: pd.DataFrame,
+    feature_names: list[str],
+    fill_strategy: str = DEFAULT_CONSTRAINT_FEATURE_NAN_FILL_STRATEGY,
+) -> dict[str, Any]:
+    if not feature_names:
+        empty_frame = pd.DataFrame(index=constraint_candidates.index)
+        return {
+            "featureFrame": empty_frame,
+            "featureNames": [],
+            "nanColumns": [],
+            "droppedColumns": [],
+            "nanCountBefore": 0,
+            "nanCountAfter": 0,
+            "fillStrategy": str(fill_strategy),
+        }
+
+    feature_frame = constraint_candidates[feature_names].copy()
+    nan_mask = feature_frame.isna()
+    nan_columns = [str(column) for column in feature_frame.columns if bool(nan_mask[column].any())]
+    dropped_columns = [str(column) for column in feature_frame.columns if bool(nan_mask[column].all())]
+    nan_count_before = int(nan_mask.sum().sum())
+
+    if dropped_columns:
+        feature_frame = feature_frame.drop(columns=dropped_columns, errors="ignore")
+    feature_names_effective = [str(name) for name in feature_names if str(name) not in set(dropped_columns)]
+
+    if fill_strategy == "fillna(0.0)":
+        feature_frame = feature_frame.fillna(0.0)
+    else:
+        # Backward-compatible fallback for unknown strategy tokens.
+        feature_frame = feature_frame.fillna(0.0)
+        fill_strategy = "fillna(0.0)"
+
+    nan_count_after = int(feature_frame.isna().sum().sum())
+    return {
+        "featureFrame": feature_frame,
+        "featureNames": feature_names_effective,
+        "nanColumns": nan_columns,
+        "droppedColumns": dropped_columns,
+        "nanCountBefore": nan_count_before,
+        "nanCountAfter": nan_count_after,
+        "fillStrategy": str(fill_strategy),
+    }
+
+
 def train_model(
     dataset_path: Path,
     output_dir: Path,
@@ -310,6 +357,13 @@ def train_model(
         "effectiveMode": str(feature_ablation_mode),
         "fallbackReason": None,
         "featureNames": [],
+    }
+    constraint_feature_nan_info = {
+        "nanColumns": [],
+        "fillStrategy": DEFAULT_CONSTRAINT_FEATURE_NAN_FILL_STRATEGY,
+        "droppedColumns": [],
+        "nanCountBefore": 0,
+        "nanCountAfter": 0,
     }
     constraint_metrics: dict[str, float] = {}
     constraint_scoring_target_name = "labelCritical"
@@ -389,53 +443,80 @@ def train_model(
         abstract_feature_names = list(feature_ablation_info["abstractFeatureNames"])
         constraint_feature_names = list(feature_ablation_info["featureNames"])
         if constraint_feature_names:
-            X_constraint = constraint_candidates[constraint_feature_names].to_numpy(dtype=float)
+            prepared_features = _prepare_constraint_feature_frame(
+                constraint_candidates=constraint_candidates,
+                feature_names=constraint_feature_names,
+                fill_strategy=DEFAULT_CONSTRAINT_FEATURE_NAN_FILL_STRATEGY,
+            )
+            constraint_feature_nan_info = {
+                "nanColumns": list(prepared_features["nanColumns"]),
+                "fillStrategy": str(prepared_features["fillStrategy"]),
+                "droppedColumns": list(prepared_features["droppedColumns"]),
+                "nanCountBefore": int(prepared_features["nanCountBefore"]),
+                "nanCountAfter": int(prepared_features["nanCountAfter"]),
+            }
+            dropped_columns = set(constraint_feature_nan_info["droppedColumns"])
+            constraint_feature_names = list(prepared_features["featureNames"])
+            if dropped_columns:
+                instance_feature_names = [
+                    str(name) for name in instance_feature_names
+                    if str(name) not in dropped_columns
+                ]
+                abstract_feature_names = [
+                    str(name) for name in abstract_feature_names
+                    if str(name) not in dropped_columns
+                ]
+            if not constraint_feature_names:
+                constraint_metrics["constraint_feature_all_dropped"] = 1.0
+            else:
+                X_constraint = prepared_features["featureFrame"].to_numpy(dtype=float)
             constraint_training_info = _resolve_constraint_training_targets(
                 constraint_candidates=constraint_candidates,
                 requested_objective=constraint_training_objective,
                 exact_priority_min_coverage=exact_priority_min_coverage,
                 exact_priority_weight=exact_priority_weight,
             )
-            y_constraint_critical = np.asarray(constraint_training_info["yCritical"], dtype=int)
-            sample_weights = np.asarray(constraint_training_info["sampleWeights"], dtype=float)
-            constraint_scoring_model = ExtraTreesClassifier(
-                n_estimators=n_estimators,
-                random_state=random_state + 4,
-                n_jobs=-1,
-            )
-            constraint_scoring_model.fit(X_constraint, y_constraint_critical, sample_weight=sample_weights)
-            critical_probability = _predict_positive_probability(constraint_scoring_model, X_constraint)
-            critical_prediction = (critical_probability >= critical_classification_threshold).astype(int)
-            constraint_metrics["constraint_critical_train_accuracy"] = float(
-                np.mean(critical_prediction == y_constraint_critical)
-            )
-            constraint_metrics["constraint_critical_train_brier"] = float(
-                np.mean((critical_probability - y_constraint_critical) ** 2)
-            )
-            constraint_metrics["constraint_critical_positive_rate"] = float(
-                np.mean(y_constraint_critical)
-            )
-            constraint_metrics["constraint_scoring_train_r2"] = float(
-                constraint_scoring_model.score(X_constraint, y_constraint_critical)
-            )
-            if "labelRankScore" in constraint_candidates.columns:
-                y_constraint_rank = pd.to_numeric(
-                    constraint_candidates["labelRankScore"],
-                    errors="coerce",
-                ).fillna(0.0).to_numpy(dtype=float)
-                constraint_ranking_aux_model = ExtraTreesRegressor(
+            if constraint_feature_names:
+                y_constraint_critical = np.asarray(constraint_training_info["yCritical"], dtype=int)
+                sample_weights = np.asarray(constraint_training_info["sampleWeights"], dtype=float)
+                constraint_scoring_model = ExtraTreesClassifier(
                     n_estimators=n_estimators,
-                    random_state=random_state + 5,
+                    random_state=random_state + 4,
                     n_jobs=-1,
                 )
-                constraint_ranking_aux_model.fit(X_constraint, y_constraint_rank)
-                rank_pred = np.asarray(constraint_ranking_aux_model.predict(X_constraint), dtype=float)
-                constraint_metrics["constraint_rank_aux_train_r2"] = float(
-                    constraint_ranking_aux_model.score(X_constraint, y_constraint_rank)
+                constraint_scoring_model.fit(X_constraint, y_constraint_critical, sample_weight=sample_weights)
+                critical_probability = _predict_positive_probability(constraint_scoring_model, X_constraint)
+                critical_prediction = (critical_probability >= critical_classification_threshold).astype(int)
+                constraint_metrics["constraint_critical_train_accuracy"] = float(
+                    np.mean(critical_prediction == y_constraint_critical)
                 )
-                constraint_metrics["constraint_rank_aux_train_mae"] = float(
-                    np.mean(np.abs(rank_pred - y_constraint_rank))
+                constraint_metrics["constraint_critical_train_brier"] = float(
+                    np.mean((critical_probability - y_constraint_critical) ** 2)
                 )
+                constraint_metrics["constraint_critical_positive_rate"] = float(
+                    np.mean(y_constraint_critical)
+                )
+                constraint_metrics["constraint_scoring_train_r2"] = float(
+                    constraint_scoring_model.score(X_constraint, y_constraint_critical)
+                )
+                if "labelRankScore" in constraint_candidates.columns:
+                    y_constraint_rank = pd.to_numeric(
+                        constraint_candidates["labelRankScore"],
+                        errors="coerce",
+                    ).fillna(0.0).to_numpy(dtype=float)
+                    constraint_ranking_aux_model = ExtraTreesRegressor(
+                        n_estimators=n_estimators,
+                        random_state=random_state + 5,
+                        n_jobs=-1,
+                    )
+                    constraint_ranking_aux_model.fit(X_constraint, y_constraint_rank)
+                    rank_pred = np.asarray(constraint_ranking_aux_model.predict(X_constraint), dtype=float)
+                    constraint_metrics["constraint_rank_aux_train_r2"] = float(
+                        constraint_ranking_aux_model.score(X_constraint, y_constraint_rank)
+                    )
+                    constraint_metrics["constraint_rank_aux_train_mae"] = float(
+                        np.mean(np.abs(rank_pred - y_constraint_rank))
+                    )
 
     metadata = build_power118_metadata(
         feature_names=list(features.columns),
@@ -477,6 +558,11 @@ def train_model(
     metadata["abstractFeatureNamesAll"] = list(abstract_feature_names_all)
     metadata["instanceFeatureNames"] = instance_feature_names
     metadata["abstractFeatureNames"] = abstract_feature_names
+    metadata["constraintFeatureNaNColumns"] = list(constraint_feature_nan_info["nanColumns"])
+    metadata["constraintFeatureNaNFillStrategy"] = str(constraint_feature_nan_info["fillStrategy"])
+    metadata["constraintFeatureDroppedColumns"] = list(constraint_feature_nan_info["droppedColumns"])
+    metadata["constraintFeatureNaNCountBefore"] = int(constraint_feature_nan_info["nanCountBefore"])
+    metadata["constraintFeatureNaNCountAfter"] = int(constraint_feature_nan_info["nanCountAfter"])
     model_bundle = {
         "feature_columns": list(features.columns),
         "commitment_columns": commitment_columns,
@@ -498,6 +584,11 @@ def train_model(
         "abstract_feature_names_all": abstract_feature_names_all,
         "critical_classification_threshold": critical_classification_threshold,
         "constraint_training_objective": metadata["constraintTrainingObjective"],
+        "constraint_feature_nan_columns": metadata["constraintFeatureNaNColumns"],
+        "constraint_feature_nan_fill_strategy": metadata["constraintFeatureNaNFillStrategy"],
+        "constraint_feature_dropped_columns": metadata["constraintFeatureDroppedColumns"],
+        "constraint_feature_nan_count_before": metadata["constraintFeatureNaNCountBefore"],
+        "constraint_feature_nan_count_after": metadata["constraintFeatureNaNCountAfter"],
         "metrics": {
             "commitment_train_r2": float(commitment_model.score(X, y_commitment)),
             "dispatch_train_r2": float(dispatch_model.score(X, y_dispatch)),
@@ -552,6 +643,11 @@ def train_model(
         "proxyLabelCoverage": metadata["proxyLabelCoverage"],
         "exactTrainingRatio": metadata["exactTrainingRatio"],
         "proxyTrainingRatio": metadata["proxyTrainingRatio"],
+        "constraintFeatureNaNColumns": metadata["constraintFeatureNaNColumns"],
+        "constraintFeatureNaNFillStrategy": metadata["constraintFeatureNaNFillStrategy"],
+        "constraintFeatureDroppedColumns": metadata["constraintFeatureDroppedColumns"],
+        "constraintFeatureNaNCountBefore": metadata["constraintFeatureNaNCountBefore"],
+        "constraintFeatureNaNCountAfter": metadata["constraintFeatureNaNCountAfter"],
         "metrics": model_bundle["metrics"],
     }
     summary_path = _write_training_summary(archive_dir, training_summary)

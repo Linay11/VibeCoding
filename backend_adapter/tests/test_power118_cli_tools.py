@@ -165,9 +165,10 @@ def test_train_model_writes_versioned_dir_without_publishing_defaults(monkeypatc
                         "constraintId": "ramp:g1:h1:up",
                         "constraintType": "ramp",
                         "inst_hourLoad": 10.0,
-                        "inst_slack": 0.1,
+                        "inst_slack": float("nan"),
                         "abs_constraintTypeCode": 1.0,
                         "abs_hourNorm": 0.1,
+                        "abs_allMissing": float("nan"),
                         "labelCritical": 1.0,
                         "labelCriticalExact": 1.0,
                         "labelCriticalExactAvailable": 1.0,
@@ -182,6 +183,7 @@ def test_train_model_writes_versioned_dir_without_publishing_defaults(monkeypatc
                         "inst_slack": 0.2,
                         "abs_constraintTypeCode": 2.0,
                         "abs_hourNorm": 0.2,
+                        "abs_allMissing": float("nan"),
                         "labelCritical": 0.0,
                         "labelCriticalExact": 0.0,
                         "labelCriticalExactAvailable": 0.0,
@@ -230,9 +232,16 @@ def test_train_model_writes_versioned_dir_without_publishing_defaults(monkeypatc
     assert metadata["constraintAuxRankingModelEnabled"] is True
     assert metadata["instanceFeatureNames"] == ["inst_hourLoad", "inst_slack"]
     assert metadata["abstractFeatureNames"] == ["abs_constraintTypeCode", "abs_hourNorm"]
+    assert metadata["constraintFeatureNaNFillStrategy"] == "fillna(0.0)"
+    assert set(metadata["constraintFeatureNaNColumns"]) == {"inst_slack", "abs_allMissing"}
+    assert metadata["constraintFeatureDroppedColumns"] == ["abs_allMissing"]
+    assert metadata["constraintFeatureNaNCountBefore"] == 3
+    assert metadata["constraintFeatureNaNCountAfter"] == 0
     assert training_summary["modelVariant"] == "default"
     assert training_summary["featureAblationMode"] == "inst+abs"
     assert training_summary["featureAblationModeEffective"] == "inst+abs"
+    assert training_summary["constraintFeatureNaNFillStrategy"] == "fillna(0.0)"
+    assert training_summary["constraintFeatureDroppedColumns"] == ["abs_allMissing"]
 
 
 def test_constraint_training_objective_selection_logic() -> None:
