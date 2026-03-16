@@ -1,6 +1,16 @@
 import { buildMockRun, mockScenarios } from './mockData.js'
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? ''
+const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000'
+const RAW_API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? import.meta.env.VITE_API_BASE ?? ''
+const API_BASE_URL = String(RAW_API_BASE_URL || '')
+  .trim()
+  .replace(/\/+$/, '') || DEFAULT_API_BASE_URL
+
+function buildApiUrl(path) {
+  const pathText = String(path ?? '')
+  const normalizedPath = pathText.startsWith('/') ? pathText : `/${pathText}`
+  return `${API_BASE_URL}${normalizedPath}`
+}
 
 function delay(ms) {
   return new Promise((resolve) => {
@@ -23,7 +33,7 @@ function makeClientError(kind, message, extra = {}) {
 async function requestJson(path, options = {}) {
   let response
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    response = await fetch(buildApiUrl(path), {
       headers: {
         'Content-Type': 'application/json',
         ...(options.headers ?? {}),
@@ -166,7 +176,7 @@ function classifyApiFailure(error, operation) {
       type: 'network',
       reason: 'Network request failed: backend is unreachable from frontend.',
       userMessage:
-        'Network failure: cannot reach backend API. Check VITE_API_BASE, SSH tunnel status, and backend service health.',
+        'Network failure: cannot reach backend API. Check VITE_API_BASE_URL, SSH tunnel status, and backend service health.',
       tone: 'error',
     }
   }

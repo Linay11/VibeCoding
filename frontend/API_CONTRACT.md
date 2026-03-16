@@ -4,8 +4,8 @@ This document captures the current contract expected by the Workbench frontend (
 
 ## 1. Base URL and Transport
 
-- API base is read from `VITE_API_BASE`.
-- Effective request URL is `${VITE_API_BASE}<path>`.
+- API base is read from `VITE_API_BASE_URL` (legacy fallback: `VITE_API_BASE`).
+- Effective request URL is `${VITE_API_BASE_URL}<path>`.
 - Requests use `Content-Type: application/json`.
 - Non-2xx responses are treated as API failures by frontend.
 

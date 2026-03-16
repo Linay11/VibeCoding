@@ -34,7 +34,7 @@ def _build_app() -> FastAPI:
     allow_all = "*" in allow_origins
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=([] if allow_all else (allow_origins or ["http://localhost:5173"])),
+        allow_origins=([] if allow_all else (allow_origins or ["http://localhost:5173", "http://127.0.0.1:5173"])),
         allow_origin_regex=(".*" if allow_all else None),
         allow_credentials=False,
         allow_methods=["*"],

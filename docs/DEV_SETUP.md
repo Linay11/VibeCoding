@@ -228,7 +228,7 @@ npm run dev
 `frontend/.env.development` should include:
 
 ```bash
-VITE_API_BASE=http://127.0.0.1:8000
+VITE_API_BASE_URL=http://127.0.0.1:8000
 ```
 
 This keeps frontend stable while backend host changes over time.
@@ -292,7 +292,7 @@ If backend is unreachable, frontend falls back to mock mode with a visible notic
 ### Frontend still shows mock fallback
 - verify backend process is running on AutoDL
 - verify SSH tunnel is active
-- verify `VITE_API_BASE=http://127.0.0.1:8000`
+- verify `VITE_API_BASE_URL=http://127.0.0.1:8000`
 - verify local `curl /api/scenarios` succeeds
 
 ### Browser CORS error

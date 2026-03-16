@@ -94,20 +94,20 @@ Why only this test for now:
 Use a backend base URL if API is not on the same origin:
 
 ```bash
-VITE_API_BASE=http://localhost:8000
+VITE_API_BASE_URL=http://localhost:8000
 ```
 
 Windows PowerShell:
 
 ```powershell
-$env:VITE_API_BASE="http://localhost:8000"
+$env:VITE_API_BASE_URL="http://localhost:8000"
 npm run dev
 ```
 
 For AutoDL remote backend (recommended for local-frontend + remote-backend integration):
 
 ```powershell
-$env:VITE_API_BASE="http://<your-autodl-ip-or-domain>:8000"
+$env:VITE_API_BASE_URL="http://<your-autodl-ip-or-domain>:8000"
 npm run dev
 ```
 
@@ -120,7 +120,7 @@ cp .env.development.example .env.development
 Default `.env.development.example` is already set for SSH tunnel mode:
 
 ```bash
-VITE_API_BASE=http://127.0.0.1:8000
+VITE_API_BASE_URL=http://127.0.0.1:8000
 ```
 
 ## API fallback behavior

@@ -69,7 +69,7 @@ Supported development mode:
 
 Typical dev connection:
 - local browser opens the Workbench
-- frontend sends API requests to `http://127.0.0.1:8000`
+- frontend sends API requests to `VITE_API_BASE_URL` (default: `http://127.0.0.1:8000`)
 - SSH tunnel forwards that local port to the AutoDL backend
 
 ## Features
@@ -145,7 +145,7 @@ npm run dev
 
 Open the app at [http://localhost:5173/workbench](http://localhost:5173/workbench).
 
-If needed, point the frontend to the tunnel endpoint with `VITE_API_BASE=http://127.0.0.1:8000`.
+If needed, point the frontend to the tunnel endpoint with `VITE_API_BASE_URL=http://127.0.0.1:8000`.
 
 For the full environment and tunnel setup, see [docs/DEV_SETUP.md](docs/DEV_SETUP.md).
 

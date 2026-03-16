@@ -233,7 +233,7 @@ describe('WorkbenchPage smoke tests', () => {
   it('renders consistent fallback messaging for Refresh Latest network failure', async () => {
     const networkReason = 'Network request failed: backend is unreachable from frontend.'
     const networkNotice =
-      'Network failure: cannot reach backend API. Check VITE_API_BASE, SSH tunnel status, and backend service health. Showing fallback run data.'
+      'Network failure: cannot reach backend API. Check VITE_API_BASE_URL, SSH tunnel status, and backend service health. Showing fallback run data.'
 
     getLatestRun
       .mockResolvedValueOnce(
