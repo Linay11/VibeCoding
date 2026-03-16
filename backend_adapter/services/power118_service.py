@@ -1053,6 +1053,7 @@ def run_power118_once(
     constraint_prediction_error = None
     constraint_scoring = None
     constraint_scoring_error = None
+    empty_constraint_candidates = False
     fixing_plan = {
         "fixedCommitmentMask": None,
         "fixedCommitmentCount": 0,
@@ -1081,6 +1082,9 @@ def run_power118_once(
     if requested_mode == "hybrid_constraint_aware_v3":
         constraint_scoring, constraint_scoring_error = _predict_constraint_scores_with_model(preview, prediction, model_artifacts)
         if constraint_scoring_error is None and constraint_scoring is not None:
+            candidate_rows = constraint_scoring.get("constraintCandidates")
+            candidate_rows = candidate_rows if isinstance(candidate_rows, list) else []
+            empty_constraint_candidates = len(candidate_rows) == 0
             scoring_plan = _build_constraint_scoring_plan(constraint_scoring, critical_top_k_ratio=effective_critical_top_k_ratio)
             critical_ids = scoring_plan["criticalConstraintIds"] or []
             active_ramp_constraint_ids = [constraint_id for constraint_id in critical_ids if str(constraint_id).startswith("ramp:")]
@@ -1108,6 +1112,8 @@ def run_power118_once(
     staged_solve_rounds = 1
     reduced_model_validated = None
     reduction_rejected_reason = constraint_prediction_error or constraint_scoring_error
+    if requested_hybrid_strategy == "constraint_aware_v3" and reduction_rejected_reason is None and empty_constraint_candidates:
+        reduction_rejected_reason = "empty_constraint_candidates"
     constraint_aware_reduction_mode = (
         "fixed_commitment_mask"
         if requested_hybrid_strategy == "constraint_aware_v2"
@@ -1186,39 +1192,44 @@ def run_power118_once(
         active_line_constraint_ids=active_line_constraint_ids,
     )
     if solve_error is None and requested_hybrid_strategy == "constraint_aware_v3" and _is_real_result(result):
-        violated_deferred_ids = _violated_deferred_constraint_ids(result, scoring_plan["deferredConstraintIds"])
-        if violated_deferred_ids:
-            constraint_reactivation_count = len(violated_deferred_ids)
-            staged_solve_rounds = 2
-            expanded_critical_ids = list((scoring_plan["criticalConstraintIds"] or []) + violated_deferred_ids)
-            active_ramp_constraint_ids = [constraint_id for constraint_id in expanded_critical_ids if str(constraint_id).startswith("ramp:")]
-            active_line_constraint_ids = [constraint_id for constraint_id in expanded_critical_ids if str(constraint_id).startswith("line:")]
-            second_result, second_error = _run_solver(
-                module,
-                data_path,
-                overrides=overrides,
-                initial_unit_commitment=prediction.get("unitCommitmentByHour"),
-                initial_dispatch=prediction.get("generatorDispatchByHour"),
-                time_limit_ms=time_limit_ms,
-                active_ramp_constraint_ids=active_ramp_constraint_ids,
-                active_line_constraint_ids=active_line_constraint_ids,
-            )
-            if second_error is None and _is_real_result(second_result):
-                result = second_result
-                remaining_violations = _violated_deferred_constraint_ids(result, scoring_plan["deferredConstraintIds"])
-                if remaining_violations:
-                    reduction_rejected_reason = "deferred constraints still violated after staged reactivation"
-                    reduced_model_validated = False
-                else:
-                    reduced_model_validated = True
-                    reduction_rejected_reason = None
-            else:
-                solve_error = second_error or "staged reactivation solve failed"
-                reduced_model_validated = False
-                reduction_rejected_reason = solve_error
+        if empty_constraint_candidates:
+            reduced_model_validated = False
+            if reduction_rejected_reason is None:
+                reduction_rejected_reason = "empty_constraint_candidates"
         else:
-            reduced_model_validated = True
-            reduction_rejected_reason = None
+            violated_deferred_ids = _violated_deferred_constraint_ids(result, scoring_plan["deferredConstraintIds"])
+            if violated_deferred_ids:
+                constraint_reactivation_count = len(violated_deferred_ids)
+                staged_solve_rounds = 2
+                expanded_critical_ids = list((scoring_plan["criticalConstraintIds"] or []) + violated_deferred_ids)
+                active_ramp_constraint_ids = [constraint_id for constraint_id in expanded_critical_ids if str(constraint_id).startswith("ramp:")]
+                active_line_constraint_ids = [constraint_id for constraint_id in expanded_critical_ids if str(constraint_id).startswith("line:")]
+                second_result, second_error = _run_solver(
+                    module,
+                    data_path,
+                    overrides=overrides,
+                    initial_unit_commitment=prediction.get("unitCommitmentByHour"),
+                    initial_dispatch=prediction.get("generatorDispatchByHour"),
+                    time_limit_ms=time_limit_ms,
+                    active_ramp_constraint_ids=active_ramp_constraint_ids,
+                    active_line_constraint_ids=active_line_constraint_ids,
+                )
+                if second_error is None and _is_real_result(second_result):
+                    result = second_result
+                    remaining_violations = _violated_deferred_constraint_ids(result, scoring_plan["deferredConstraintIds"])
+                    if remaining_violations:
+                        reduction_rejected_reason = "deferred constraints still violated after staged reactivation"
+                        reduced_model_validated = False
+                    else:
+                        reduced_model_validated = True
+                        reduction_rejected_reason = None
+                else:
+                    solve_error = second_error or "staged reactivation solve failed"
+                    reduced_model_validated = False
+                    reduction_rejected_reason = solve_error
+            else:
+                reduced_model_validated = True
+                reduction_rejected_reason = None
     if solve_error:
         fallback_reason = f"hybrid {requested_hybrid_strategy} solve failed: {solve_error}"
         reduced_solve_fallback_reason = fallback_reason

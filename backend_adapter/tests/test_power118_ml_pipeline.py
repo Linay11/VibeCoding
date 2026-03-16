@@ -229,6 +229,41 @@ def test_constraint_candidate_records_support_impact_exact_and_proxy_fallback_la
     assert gen_row["labelSource"] == "heuristic_slack_proxy"
 
 
+def test_constraint_candidate_records_build_inference_fallback_without_solver_result() -> None:
+    power_data = _power_data()
+    power_data["branches"] = [
+        {"fromBusIndex": 0, "toBusIndex": 1, "capacity": 100.0, "x": 0.1},
+        {"fromBusIndex": 1, "toBusIndex": 0, "capacity": 150.0, "x": 0.2},
+    ]
+    schedule_prediction = {
+        "unitCommitmentByHour": [[1.0, 1.0, 1.0], [0.0, 1.0, 1.0]],
+        "generatorDispatchByHour": [[20.0, 25.0, 30.0], [0.0, 15.0, 18.0]],
+    }
+
+    records = build_power118_constraint_candidate_records(
+        power_data=power_data,
+        result=None,
+        schedule_prediction=schedule_prediction,
+        sample_id="inference-test",
+    )
+
+    expected_ramp = len(power_data["generators"]) * (int(power_data["timeHorizon"]) - 1) * 2
+    expected_line = len(power_data["branches"]) * int(power_data["timeHorizon"])
+    assert len(records) == expected_ramp + expected_line
+
+    reducible_rows = [row for row in records if float(row.get("canBeReduced", 0.0) or 0.0) >= 0.5]
+    assert reducible_rows
+    assert any(str(row.get("constraintId", "")).startswith("ramp:") for row in reducible_rows)
+    assert any(str(row.get("constraintId", "")).startswith("line:") for row in reducible_rows)
+    assert all(str(row.get("labelSource")) == "inference_no_slack_defaults" for row in reducible_rows)
+
+    ramp_row = next(row for row in reducible_rows if str(row.get("constraintType")) == "ramp")
+    line_row = next(row for row in reducible_rows if str(row.get("constraintType")) == "line")
+    assert "inst_dispatch" in ramp_row and "abs_pMax" in ramp_row
+    assert "inst_lineEndpointLoad" in line_row and "abs_branchCapacity" in line_row
+    assert "inst_hourLoad" in ramp_row and "abs_constraintTypeCode" in ramp_row
+
+
 def test_predict_power118_schedule_repairs_and_scores_prediction() -> None:
     power_data = _power_data()
     feature_record = build_power118_feature_record(power_data)

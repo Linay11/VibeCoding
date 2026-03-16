@@ -281,6 +281,63 @@ def _critical_proxy_label(can_be_reduced: float, tight_label: float, rank_score:
     return 1.0 if (tight_label >= 0.5 or rank_score >= 0.75) else 0.0
 
 
+def _build_inference_constraint_slack_records(power_data: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    horizon = max(0, int(power_data.get("timeHorizon", 0)))
+    generators = list(power_data.get("generators", []))
+    branches = list(power_data.get("branches", []))
+
+    ramp_records: list[dict[str, Any]] = []
+    for generator_index in range(len(generators)):
+        for hour_index in range(max(horizon - 1, 0)):
+            ramp_records.append(
+                {
+                    "constraintId": f"ramp:g{generator_index + 1}:h{hour_index + 1}:up",
+                    "constraintType": "ramp",
+                    "constraintSubtype": "up",
+                    "generatorIndex": generator_index,
+                    "hourIndex": hour_index,
+                    "rawSlack": 1.0,
+                    "slack": 1.0,
+                    "active": False,
+                }
+            )
+            ramp_records.append(
+                {
+                    "constraintId": f"ramp:g{generator_index + 1}:h{hour_index + 1}:down",
+                    "constraintType": "ramp",
+                    "constraintSubtype": "down",
+                    "generatorIndex": generator_index,
+                    "hourIndex": hour_index,
+                    "rawSlack": 1.0,
+                    "slack": 1.0,
+                    "active": False,
+                }
+            )
+
+    line_records: list[dict[str, Any]] = []
+    for line_index in range(len(branches)):
+        for hour_index in range(horizon):
+            line_records.append(
+                {
+                    "constraintId": f"line:g{line_index + 1}:h{hour_index + 1}:absCap",
+                    "constraintType": "line",
+                    "constraintSubtype": "absCap",
+                    "lineIndex": line_index,
+                    "hourIndex": hour_index,
+                    "rawSlack": 1.0,
+                    "slack": 1.0,
+                    "active": False,
+                }
+            )
+
+    synthetic_records: dict[str, list[dict[str, Any]]] = {}
+    if ramp_records:
+        synthetic_records["ramp"] = ramp_records
+    if line_records:
+        synthetic_records["line"] = line_records
+    return synthetic_records
+
+
 def build_power118_constraint_candidate_records(
     power_data: dict[str, Any],
     result: dict[str, Any] | None = None,
@@ -298,6 +355,10 @@ def build_power118_constraint_candidate_records(
     result = result or {}
     diagnostics = result.get("constraintDiagnostics") if isinstance(result.get("constraintDiagnostics"), dict) else {}
     slack_records = diagnostics.get("slackRecords") if isinstance(diagnostics.get("slackRecords"), dict) else {}
+    inference_without_solver_labels = False
+    if not slack_records:
+        slack_records = _build_inference_constraint_slack_records(power_data)
+        inference_without_solver_labels = bool(slack_records)
     top_tight_by_type = diagnostics.get("topTightConstraints") if isinstance(diagnostics.get("topTightConstraints"), dict) else {}
     top_tight_ids = {
         str(constraint_type): {str(item.get("constraintId")) for item in items if isinstance(item, dict)}
@@ -342,21 +403,63 @@ def build_power118_constraint_candidate_records(
                 if hour_index > 0 and hour_index - 1 < len(total_load_by_hour)
                 else hour_load
             )
-            instance_features = {
-                "inst_peakLoad": float(summary.get("peakLoad", 0.0)),
-                "inst_totalDailyLoad": float(summary.get("totalDailyLoad", 0.0)),
-                "inst_hourLoad": hour_load,
-                "inst_hourLoadRatio": hour_load / max(float(summary.get("peakLoad", 0.0)), 1.0),
-                "inst_hourLoadDeltaNext": next_hour_load - hour_load,
-                "inst_hourLoadDeltaPrev": hour_load - previous_hour_load,
-                "inst_slack": slack_value,
-            }
-            abstract_features = {
-                "abs_constraintTypeCode": _constraint_type_code(str(constraint_type)),
-                "abs_constraintSubtypeCode": _constraint_subtype_code(subtype),
-                "abs_hourIndex": float(hour_index),
-                "abs_hourNorm": float(hour_index + 1) / max(float(horizon), 1.0),
-            }
+            if inference_without_solver_labels:
+                instance_features = {
+                    "inst_peakLoad": float(summary.get("peakLoad", 0.0)),
+                    "inst_totalDailyLoad": float(summary.get("totalDailyLoad", 0.0)),
+                    "inst_hourLoad": hour_load,
+                    "inst_hourLoadRatio": hour_load / max(float(summary.get("peakLoad", 0.0)), 1.0),
+                    "inst_hourLoadDeltaNext": next_hour_load - hour_load,
+                    "inst_hourLoadDeltaPrev": hour_load - previous_hour_load,
+                    "inst_slack": slack_value,
+                    "inst_dispatch": 0.0,
+                    "inst_commitment": 0.0,
+                    "inst_dispatchToPmaxRatio": 0.0,
+                    "inst_dispatchMarginPmax": 0.0,
+                    "inst_dispatchMarginPmin": 0.0,
+                    "inst_rampPressure": 0.0,
+                    "inst_lineEndpointLoad": 0.0,
+                    "inst_lineEndpointLoadRatio": 0.0,
+                    "inst_busLoad": 0.0,
+                }
+                abstract_features = {
+                    "abs_constraintTypeCode": _constraint_type_code(str(constraint_type)),
+                    "abs_constraintSubtypeCode": _constraint_subtype_code(subtype),
+                    "abs_hourIndex": float(hour_index),
+                    "abs_hourNorm": float(hour_index + 1) / max(float(horizon), 1.0),
+                    "abs_generatorIndex": 0.0,
+                    "abs_generatorIndexNorm": 0.0,
+                    "abs_lineIndex": 0.0,
+                    "abs_lineIndexNorm": 0.0,
+                    "abs_fromBusIndex": 0.0,
+                    "abs_toBusIndex": 0.0,
+                    "abs_branchCapacity": 0.0,
+                    "abs_branchReactance": 0.0,
+                    "abs_busIndex": 0.0,
+                    "abs_pMin": 0.0,
+                    "abs_pMax": 0.0,
+                    "abs_rampUp": 0.0,
+                    "abs_rampDown": 0.0,
+                    "abs_startCost": 0.0,
+                    "abs_minUpTime": 0.0,
+                    "abs_minDownTime": 0.0,
+                }
+            else:
+                instance_features = {
+                    "inst_peakLoad": float(summary.get("peakLoad", 0.0)),
+                    "inst_totalDailyLoad": float(summary.get("totalDailyLoad", 0.0)),
+                    "inst_hourLoad": hour_load,
+                    "inst_hourLoadRatio": hour_load / max(float(summary.get("peakLoad", 0.0)), 1.0),
+                    "inst_hourLoadDeltaNext": next_hour_load - hour_load,
+                    "inst_hourLoadDeltaPrev": hour_load - previous_hour_load,
+                    "inst_slack": slack_value,
+                }
+                abstract_features = {
+                    "abs_constraintTypeCode": _constraint_type_code(str(constraint_type)),
+                    "abs_constraintSubtypeCode": _constraint_subtype_code(subtype),
+                    "abs_hourIndex": float(hour_index),
+                    "abs_hourNorm": float(hour_index + 1) / max(float(horizon), 1.0),
+                }
 
             if generator_index is not None and 0 <= int(generator_index) < len(generators):
                 generator = generators[int(generator_index)]
@@ -401,14 +504,27 @@ def build_power118_constraint_candidate_records(
 
             if line_index is not None and 0 <= int(line_index) < len(branches):
                 branch = branches[int(line_index)]
-                from_bus = int(branch["fromBusIndex"])
-                to_bus = int(branch["toBusIndex"])
-                from_load = float(load_at_bus[hour_index][from_bus]) if hour_index < len(load_at_bus) else 0.0
-                to_load = float(load_at_bus[hour_index][to_bus]) if hour_index < len(load_at_bus) else 0.0
+                branch_capacity = float(branch.get("capacity", 0.0) or 0.0)
+                branch_reactance = float(branch.get("x", 0.0) or 0.0)
+                from_bus = int(branch.get("fromBusIndex", 0) or 0)
+                to_bus = int(branch.get("toBusIndex", 0) or 0)
+                hourly_bus_load = (
+                    load_at_bus[hour_index]
+                    if hour_index < len(load_at_bus) and isinstance(load_at_bus[hour_index], list)
+                    else []
+                )
+                if hourly_bus_load:
+                    from_bus = min(max(from_bus, 0), len(hourly_bus_load) - 1)
+                    to_bus = min(max(to_bus, 0), len(hourly_bus_load) - 1)
+                    from_load = float(hourly_bus_load[from_bus])
+                    to_load = float(hourly_bus_load[to_bus])
+                else:
+                    from_load = 0.0
+                    to_load = 0.0
                 instance_features.update(
                     {
                         "inst_lineEndpointLoad": from_load + to_load,
-                        "inst_lineEndpointLoadRatio": (from_load + to_load) / max(float(branch["capacity"]), 1.0),
+                        "inst_lineEndpointLoadRatio": (from_load + to_load) / max(branch_capacity, 1.0),
                     }
                 )
                 abstract_features.update(
@@ -417,14 +533,19 @@ def build_power118_constraint_candidate_records(
                         "abs_lineIndexNorm": float(int(line_index) + 1) / max(float(len(branches)), 1.0),
                         "abs_fromBusIndex": float(from_bus),
                         "abs_toBusIndex": float(to_bus),
-                        "abs_branchCapacity": float(branch["capacity"]),
-                        "abs_branchReactance": float(branch["x"]),
+                        "abs_branchCapacity": branch_capacity,
+                        "abs_branchReactance": branch_reactance,
                     }
                 )
 
             if bus_index is not None:
                 bus_idx = int(bus_index)
-                bus_load = float(load_at_bus[hour_index][bus_idx]) if hour_index < len(load_at_bus) else 0.0
+                hourly_bus_load = (
+                    load_at_bus[hour_index]
+                    if hour_index < len(load_at_bus) and isinstance(load_at_bus[hour_index], list)
+                    else []
+                )
+                bus_load = float(hourly_bus_load[bus_idx]) if hourly_bus_load and 0 <= bus_idx < len(hourly_bus_load) else 0.0
                 instance_features["inst_busLoad"] = bus_load
                 abstract_features["abs_busIndex"] = float(bus_idx)
 
@@ -464,7 +585,7 @@ def build_power118_constraint_candidate_records(
                 elif impact_record:
                     label_source = "impact_probe_unavailable_fallback"
                 else:
-                    label_source = "heuristic_slack_proxy"
+                    label_source = "inference_no_slack_defaults" if inference_without_solver_labels else "heuristic_slack_proxy"
 
             candidate_record.update(
                 {
