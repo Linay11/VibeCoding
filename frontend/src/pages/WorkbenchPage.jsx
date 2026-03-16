@@ -16,7 +16,7 @@ function formatMs(value) {
 
 function formatGeneratedTime(value) {
   if (!value) {
-    return 'Not generated yet'
+    return '尚未生成'
   }
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) {
@@ -26,7 +26,11 @@ function formatGeneratedTime(value) {
 }
 
 function formatBool(value) {
-  return value ? 'Yes' : 'No'
+  return value ? '是' : '否'
+}
+
+function formatComparisonCost(value) {
+  return Number(value).toFixed(3)
 }
 
 function buildDerivedTrend(runData) {
@@ -45,7 +49,7 @@ function buildComparisonRows(runData) {
   if (Array.isArray(runData?.comparison) && runData.comparison.length > 0) {
     return runData.comparison
       .map((item, index) => ({
-        label: item.label ?? `Item ${index + 1}`,
+        label: item.label ?? `项目 ${index + 1}`,
         value: Number(item.value ?? 0),
       }))
       .filter((item) => Number.isFinite(item.value))
@@ -67,32 +71,32 @@ function buildComparisonRows(runData) {
 
 function getSourceLabel(source) {
   if (source === 'api') {
-    return 'Backend API'
+    return '后端 API'
   }
   if (source === 'fallback') {
-    return 'Frontend fallback'
+    return '前端回退'
   }
-  return 'Loading'
+  return '加载中'
 }
 
 function getModeLabel(mode) {
   if (mode === 'real') {
-    return 'Real run'
+    return '真实执行'
   }
   if (mode === 'compat') {
-    return 'Compat run'
+    return '兼容模式'
   }
   if (mode === 'fallback') {
-    return 'Fallback demo'
+    return '回退演示'
   }
-  return 'Not available'
+  return '不可用'
 }
 
 function resolveDashboardState({ loading, refreshing, running, error, runData, source, runMode, modeReason }) {
   if (error) {
     return {
       key: 'error',
-      title: 'Action error',
+      title: '操作异常',
       description: error,
     }
   }
@@ -100,63 +104,63 @@ function resolveDashboardState({ loading, refreshing, running, error, runData, s
   if (loading && !runData) {
     return {
       key: 'loading',
-      title: 'Loading baseline data',
-      description: 'Fetching scenarios and latest run data from backend adapter.',
+      title: '正在加载基础数据',
+      description: '正在从后端适配器获取场景列表和最新运行结果。',
     }
   }
 
   if (running) {
     return {
       key: 'loading',
-      title: 'Run in progress',
-      description: 'Run Experiment is executing. Results will refresh when the response returns.',
+      title: '运行进行中',
+      description: '实验已启动，返回结果后会自动刷新。',
     }
   }
 
   if (refreshing) {
     return {
       key: 'loading',
-      title: 'Refreshing latest run',
-      description: 'Reading latest backend run for the selected scenario.',
+      title: '正在刷新最新结果',
+      description: '正在读取当前场景的后端最新运行数据。',
     }
   }
 
   if (!runData) {
     return {
       key: 'empty',
-      title: 'No run data yet',
-      description: 'Select a scenario and run an experiment, or refresh latest to load existing data.',
+      title: '暂无运行数据',
+      description: '请选择场景并启动实验，或刷新最新结果加载已有数据。',
     }
   }
 
   if (source === 'fallback' || runMode === 'fallback') {
     return {
       key: 'fallback',
-      title: 'Frontend fallback mode',
-      description: modeReason || 'The UI is showing local fallback data because backend data is unavailable for this step.',
+      title: '前端回退模式',
+      description: modeReason || '当前步骤无法获取后端数据，界面展示本地回退结果。',
     }
   }
 
   if (source === 'api' && runMode === 'compat') {
     return {
       key: 'compat',
-      title: 'Backend compatibility mode',
-      description: modeReason || 'Response came from backend adapter compatibility mode, not full real solver execution.',
+      title: '后端兼容模式',
+      description: modeReason || '当前结果来自后端适配器兼容路径，不是完整真实求解。',
     }
   }
 
   if (source === 'api' && runMode === 'real') {
     return {
       key: 'real',
-      title: 'Backend real execution',
-      description: 'Current result comes from a real backend optimization run.',
+      title: '后端真实执行',
+      description: '当前结果来自后端真实优化运行。',
     }
   }
 
   return {
     key: 'empty',
-    title: 'State pending',
-    description: 'Waiting for a complete result context.',
+    title: '状态等待中',
+    description: '正在等待完整结果上下文。',
   }
 }
 
@@ -249,7 +253,7 @@ function WorkbenchPage() {
 
   async function handleRunNow() {
     if (!selectedScenario) {
-      setError('No scenario selected. Please choose one before starting a run.')
+      setError('尚未选择场景，请先选择后再开始运行。')
       return
     }
     setRunning(true)
@@ -260,7 +264,7 @@ function WorkbenchPage() {
         runMode: selectedScenario === 'power-118' ? selectedRunMode : 'exact',
       })
       if (!response.data) {
-        setError('Run failed: backend did not return usable data.')
+        setError('运行失败：后端未返回可用数据。')
         return
       }
       applyRunResponse(response)
@@ -292,38 +296,38 @@ function WorkbenchPage() {
 
   const comparisonRows = useMemo(() => buildComparisonRows(runData), [runData])
 
-  const summaryScenario = selectedScenarioDetail?.name ?? selectedScenario ?? 'Not selected'
+  const summaryScenario = selectedScenarioDetail?.name ?? selectedScenario ?? '未选择'
   const summarySource = getSourceLabel(source)
   const summaryMode = getModeLabel(runMode)
   const requestedModeLabel = runData?.requestedRunMode ?? (isPower118Scenario ? selectedRunMode : null)
   const actualModeLabel = runData?.solverModeUsed ?? null
   const modeSwitchLabel =
     requestedModeLabel && actualModeLabel && requestedModeLabel !== actualModeLabel
-      ? `Requested ${requestedModeLabel}, used ${actualModeLabel}.`
+      ? `请求模式 ${requestedModeLabel}，实际使用 ${actualModeLabel}。`
       : ''
-  const solverModeLabel = runData?.solverModeUsed ? `Solver mode: ${runData.solverModeUsed}.` : ''
+  const solverModeLabel = runData?.solverModeUsed ? `求解模式：${runData.solverModeUsed}。` : ''
   const diagnosticBits = [
     modeSwitchLabel,
-    runData?.modelVersion ? `Model: ${runData.modelVersion}.` : '',
-    runData?.featureSchemaVersion ? `Feature schema: ${runData.featureSchemaVersion}.` : '',
-    runData?.mlConfidence != null ? `ML confidence: ${(Number(runData.mlConfidence) * 100).toFixed(1)}%.` : '',
-    runData?.repairApplied != null ? `Repair applied: ${formatBool(runData.repairApplied)}.` : '',
-    runData?.objectiveValue != null ? `Objective: ${Number(runData.objectiveValue).toFixed(3)}.` : '',
-    runData?.runtimeMs != null ? `Runtime: ${Math.round(Number(runData.runtimeMs))} ms.` : '',
-    runData?.feasible != null ? `Feasible: ${formatBool(runData.feasible)}.` : '',
-    runData?.fallbackReason ? `Fallback: ${runData.fallbackReason}.` : '',
+    runData?.modelVersion ? `模型版本：${runData.modelVersion}。` : '',
+    runData?.featureSchemaVersion ? `特征版本：${runData.featureSchemaVersion}。` : '',
+    runData?.mlConfidence != null ? `ML 置信度：${(Number(runData.mlConfidence) * 100).toFixed(1)}%。` : '',
+    runData?.repairApplied != null ? `修复已应用：${formatBool(runData.repairApplied)}。` : '',
+    runData?.objectiveValue != null ? `目标值：${Number(runData.objectiveValue).toFixed(3)}。` : '',
+    runData?.runtimeMs != null ? `运行耗时：${Math.round(Number(runData.runtimeMs))} ms。` : '',
+    runData?.feasible != null ? `可行性：${formatBool(runData.feasible)}。` : '',
+    runData?.fallbackReason ? `回退原因：${runData.fallbackReason}。` : '',
   ]
     .filter(Boolean)
     .join(' ')
   const baseSummaryReason =
     runModeReason ||
     (runMode === 'real'
-      ? 'Real solver execution completed via backend adapter.'
+      ? '后端适配器已完成真实求解执行。'
       : runMode === 'compat'
-        ? 'Backend adapter returned compatibility run output.'
+        ? '后端适配器返回兼容模式结果。'
         : runMode === 'fallback'
-          ? 'Frontend generated fallback run due to API unavailability.'
-          : 'No run reason available yet.')
+          ? '由于 API 不可用，前端生成了回退结果。'
+          : '当前暂无可用运行说明。')
   const summaryReason = [solverModeLabel, diagnosticBits, baseSummaryReason].filter(Boolean).join(' ')
   const summaryGenerated = formatGeneratedTime(runData?.generatedAt)
 
@@ -342,35 +346,19 @@ function WorkbenchPage() {
     <div className="fade-in">
       <section className="workbench-head card">
         <div>
-          <p className="eyebrow">Optimization Experiment Dashboard</p>
-          <h1>Workbench</h1>
+          <p className="eyebrow">优化实验控制台</p>
+          <h1>实验台</h1>
           <p className="lead">
-            Run experiments, inspect solver behavior, and explain results with clear runtime context.
+            在一个页面里完成实验运行、行为观察与结果解释，确保上下文清晰可追踪。
           </p>
         </div>
       </section>
 
-      <RunSummaryPanel
-        scenario={summaryScenario}
-        sourceLabel={summarySource}
-        runModeLabel={summaryMode}
-        modeReason={summaryReason}
-        generatedTime={summaryGenerated}
-      />
-
-      <DashboardStatePanel stateKey={dashboardState.key} title={dashboardState.title} description={dashboardState.description} />
-
-      {notice ? (
-        <section className={`notice-banner card notice-${noticeTone}`} role="status" aria-live="polite">
-          <p>{notice}</p>
-        </section>
-      ) : null}
-
-      <section className="workbench-grid">
+      <section className="workbench-stage">
         <article className="card control-panel">
-          <h2>Run Control</h2>
+          <h2>运行控制</h2>
           <label className="field-label" htmlFor="scenario-picker">
-            Scenario
+            场景
           </label>
           <select
             id="scenario-picker"
@@ -379,7 +367,7 @@ function WorkbenchPage() {
             onChange={(event) => setSelectedScenario(event.target.value)}
             disabled={loading || running}
           >
-            {scenarios.length === 0 ? <option value="">No scenario available</option> : null}
+            {scenarios.length === 0 ? <option value="">暂无可用场景</option> : null}
             {scenarios.map((scenario) => (
               <option key={scenario.id} value={scenario.id}>
                 {scenario.name}
@@ -390,14 +378,14 @@ function WorkbenchPage() {
           <p className="field-help">
             {selectedScenarioDetail?.description ??
               (loading
-                ? 'Loading scenarios...'
-                : 'No scenario loaded. Check backend API or continue with fallback demo data.')}
+                ? '正在加载场景...'
+                : '场景未加载。请检查后端 API，或继续使用回退演示数据。')}
           </p>
 
           {isPower118Scenario ? (
             <>
               <label className="field-label" htmlFor="run-mode-picker">
-                Solver Mode
+                求解模式
               </label>
               <select
                 id="run-mode-picker"
@@ -406,11 +394,11 @@ function WorkbenchPage() {
                 onChange={(event) => setSelectedRunMode(event.target.value)}
                 disabled={loading || running}
               >
-                <option value="exact">Exact</option>
-                <option value="hybrid">Hybrid</option>
-                <option value="ml">ML Only</option>
+                <option value="exact">精确</option>
+                <option value="hybrid">混合</option>
+                <option value="ml">仅 ML</option>
               </select>
-              <p className="field-help">Hybrid uses ML warm-start plus exact SCUC when the remote solver runtime is available.</p>
+              <p className="field-help">混合模式会优先使用 ML 热启动，并在远端求解器可用时接入精确 SCUC。</p>
             </>
           ) : null}
 
@@ -420,29 +408,18 @@ function WorkbenchPage() {
               onClick={handleRefreshLatest}
               disabled={running || loading || refreshing || !selectedScenario}
             >
-              {refreshing ? 'Refreshing...' : 'Refresh Latest'}
+              {refreshing ? '刷新中...' : '刷新最新结果'}
             </button>
 
             <button className="btn btn-primary" onClick={handleRunNow} disabled={running || refreshing || loading || !selectedScenario}>
-              {running ? 'Running...' : 'Run Experiment'}
+              {running ? '运行中...' : '开始运行'}
             </button>
           </div>
 
           {source === 'fallback' ? (
             <p className="field-help">
-              Fallback mode is active. Data is interactive, but it is not a confirmed backend latest run.
+              当前处于前端回退模式。你仍可交互查看，但该数据不是后端确认的最新运行结果。
             </p>
-          ) : null}
-
-          {isPower118Scenario && runData ? (
-            <div className="field-help" aria-label="Power 118 diagnostics">
-              <p>{`Requested mode: ${requestedModeLabel ?? 'unknown'}`}</p>
-              <p>{`Actual mode: ${actualModeLabel ?? 'unknown'}`}</p>
-              <p>{`Feasible: ${formatBool(Boolean(runData.feasible))}`}</p>
-              <p>{`Runtime: ${runData.runtimeMs != null ? `${Math.round(Number(runData.runtimeMs))} ms` : 'NA'}`}</p>
-              <p>{`Objective: ${runData.objectiveValue != null ? Number(runData.objectiveValue).toFixed(3) : 'NA'}`}</p>
-              <p>{`Fallback reason: ${runData.fallbackReason || 'None'}`}</p>
-            </div>
           ) : null}
 
           {error ? (
@@ -452,80 +429,116 @@ function WorkbenchPage() {
           ) : null}
         </article>
 
-        <section className="metrics-grid" aria-label="Run metrics">
+        <section className="workbench-main">
+          <RunSummaryPanel
+            scenario={summaryScenario}
+            sourceLabel={summarySource}
+            sourceCode={source}
+            runModeLabel={summaryMode}
+            modeCode={runMode}
+            modeReason={summaryReason}
+            generatedTime={summaryGenerated}
+          />
+
+          {isPower118Scenario && runData ? (
+            <section className="card power118-diagnostics" aria-label="电力 118 诊断信息">
+              <h3>电力 118 诊断</h3>
+              <div className="power118-diagnostics-grid">
+                <p>{`请求模式：${requestedModeLabel ?? '未知'}`}</p>
+                <p>{`实际模式：${actualModeLabel ?? '未知'}`}</p>
+                <p>{`可行性：${formatBool(Boolean(runData.feasible))}`}</p>
+                <p>{`运行耗时：${runData.runtimeMs != null ? `${Math.round(Number(runData.runtimeMs))} ms` : 'NA'}`}</p>
+                <p>{`目标值：${runData.objectiveValue != null ? Number(runData.objectiveValue).toFixed(3) : 'NA'}`}</p>
+                <p>{`回退原因：${runData.fallbackReason || '无'}`}</p>
+              </div>
+            </section>
+          ) : null}
+        </section>
+      </section>
+
+      <section className="workbench-wide">
+        <DashboardStatePanel stateKey={dashboardState.key} title={dashboardState.title} description={dashboardState.description} />
+
+        {notice ? (
+          <section className={`notice-banner card notice-${noticeTone}`} role="status" aria-live="polite">
+            <p>{notice}</p>
+          </section>
+        ) : null}
+
+        <section className="metrics-grid" aria-label="运行指标">
           <MetricCard
-            label="Solve Time"
+            label="求解耗时"
             value={runData ? formatMs(runData.metrics.solveTimeMs) : '--'}
-            hint="How fast this run finished."
-            tooltip="Elapsed solver time for this run. Lower is generally better for responsiveness."
+            hint="本次运行完成速度"
+            tooltip="本次运行的总耗时。通常越低表示响应越快。"
           />
           <MetricCard
-            label="Infeasibility Rate"
+            label="不可行率"
             value={runData ? formatPct(runData.metrics.infeasibilityRate) : '--'}
-            hint="How often constraints are broken."
-            tooltip="Share of outcomes that violate constraints. Lower means more reliable solutions."
+            hint="约束被违反的比例"
+            tooltip="结果中违反约束的占比，越低通常表示结果越可靠。"
           />
           <MetricCard
-            label="Suboptimality"
+            label="次优度"
             value={runData ? formatPct(runData.metrics.suboptimality) : '--'}
-            hint="How far from best-known objective."
-            tooltip="Gap between current objective and reference best objective. Lower indicates better quality."
+            hint="与参考最优目标的差距"
+            tooltip="当前目标与参考最佳目标的差距，越低通常代表质量越高。"
           />
         </section>
       </section>
 
       <section className="card analysis-intro">
-        <h2>Analysis Flow</h2>
+        <h2>分析流程</h2>
         <p>
-          Step 1 checks runtime trend, Step 2 compares strategy cost, and Step 3 reviews full strategy rows for explanation details.
+          第一步查看耗时趋势，第二步比较策略成本，第三步阅读完整策略表并解释结果细节。
         </p>
       </section>
 
       <section className="analysis-grid">
         <section className="card chart-panel">
           <div className="table-head">
-            <h2>Step 1-2: Trend and Comparison</h2>
-            <p>Charts prefer backend payload values and only derive locally as a fallback safeguard.</p>
+            <h2>步骤 1-2：趋势与对比</h2>
+            <p>图表优先使用后端返回值，仅在缺失时做本地兜底推导。</p>
           </div>
 
           <div className="chart-grid">
             <article className="chart-card">
-              <h3 className="chart-title">1) Solve Time Trend</h3>
-              <p className="chart-copy">Recent solve-time direction (ms) for quick performance trend checks.</p>
+              <h3 className="chart-title">1）求解耗时趋势</h3>
+              <p className="chart-copy">用于快速观察近期耗时变化方向（ms）。</p>
               <TrendChart points={trendPoints} unit="ms" />
             </article>
 
             <article className="chart-card">
-              <h3 className="chart-title">2) Cost Comparison</h3>
-              <p className="chart-copy">Relative cost across strategies in the latest run snapshot.</p>
-              <ComparisonChart rows={comparisonRows} formatValue={(value) => value.toFixed(3)} />
+              <h3 className="chart-title">2）策略成本对比</h3>
+              <p className="chart-copy">展示最新运行快照中各策略的相对成本。</p>
+              <ComparisonChart rows={comparisonRows} formatValue={formatComparisonCost} />
             </article>
           </div>
         </section>
 
         <section className="card table-wrap strategy-panel">
           <div className="table-head">
-            <h2>Step 3: Strategy Table</h2>
-            <p>{runData ? `Run ID: ${runData.runId}` : 'No run yet. Start by clicking "Run Experiment".'}</p>
+            <h2>步骤 3：策略表</h2>
+            <p>{runData ? `运行 ID：${runData.runId}` : '当前暂无运行结果，请先点击“开始运行”。'}</p>
           </div>
 
           {runData ? (
             <div className="table-scroll">
               <table>
-                <caption className="sr-only">Strategy output table</caption>
+                <caption className="sr-only">策略输出表</caption>
                 <thead>
                   <tr>
-                    <th scope="col">Strategy</th>
-                    <th scope="col">Feasible</th>
-                    <th scope="col">Cost</th>
-                    <th scope="col">Rank</th>
+                    <th scope="col">策略</th>
+                    <th scope="col">可行</th>
+                    <th scope="col">成本</th>
+                    <th scope="col">排名</th>
                   </tr>
                 </thead>
                 <tbody>
                   {runData.strategies.map((row) => (
                     <tr key={row.id}>
                       <td>{row.name}</td>
-                      <td>{row.feasible ? 'Yes' : 'No'}</td>
+                      <td>{row.feasible ? '是' : '否'}</td>
                       <td>{row.cost.toFixed(3)}</td>
                       <td>{row.rank}</td>
                     </tr>
@@ -534,7 +547,7 @@ function WorkbenchPage() {
               </table>
             </div>
           ) : (
-            <p className="empty-copy">No strategy table to display yet. Select a scenario, then run or refresh to load data.</p>
+            <p className="empty-copy">暂无策略表数据。请选择场景后运行，或刷新加载历史结果。</p>
           )}
         </section>
       </section>

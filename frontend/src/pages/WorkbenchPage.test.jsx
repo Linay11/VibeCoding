@@ -12,7 +12,7 @@ vi.mock('../services/optimizerApi.js', () => ({
 function buildRunPayload({
   source = 'api',
   mode = 'compat',
-  note = 'Compatibility mode due to missing optional solver dependency.',
+  note = '兼容模式：缺少可选求解器依赖。',
   notice = '',
   noticeTone = 'info',
   errorType = 'none',
@@ -80,8 +80,8 @@ describe('WorkbenchPage smoke tests', () => {
       data: [
         {
           id: 'portfolio',
-          name: 'Portfolio Optimization',
-          description: 'Portfolio scenario for smoke test',
+          name: '投资组合优化',
+          description: '投资组合场景（测试）',
         },
       ],
       notice: '',
@@ -91,7 +91,7 @@ describe('WorkbenchPage smoke tests', () => {
       buildRunPayload({
         source: 'fallback',
         mode: 'fallback',
-        note: 'No latest run exists on backend yet (NOT_FOUND).',
+        note: '后端暂无最新运行结果（NOT_FOUND）。',
       }),
     )
     runExperiment.mockResolvedValue(buildRunPayload())
@@ -104,17 +104,17 @@ describe('WorkbenchPage smoke tests', () => {
       expect(getLatestRun).toHaveBeenCalledWith('portfolio')
     })
 
-    const summary = await screen.findByRole('region', { name: /run summary/i })
+    const summary = await screen.findByRole('region', { name: /运行摘要/i })
     const scoped = within(summary)
 
-    expect(scoped.getByText('Portfolio Optimization')).toBeInTheDocument()
-    expect(scoped.getByText('Frontend fallback')).toBeInTheDocument()
-    expect(scoped.getByText('Fallback demo')).toBeInTheDocument()
-    expect(scoped.getByText(/No latest run exists on backend yet/i)).toBeInTheDocument()
+    expect(scoped.getByText('投资组合优化')).toBeInTheDocument()
+    expect(scoped.getByText('前端回退')).toBeInTheDocument()
+    expect(scoped.getByText('回退演示')).toBeInTheDocument()
+    expect(scoped.getByText(/后端暂无最新运行结果/i)).toBeInTheDocument()
   })
 
   it('renders compat mode reason consistently in summary and state panel', async () => {
-    const compatReason = 'Compatibility mode due to missing optional solver dependency.'
+    const compatReason = '兼容模式：缺少可选求解器依赖。'
     getLatestRun.mockResolvedValueOnce(
       buildRunPayload({
         mode: 'compat',
@@ -128,17 +128,17 @@ describe('WorkbenchPage smoke tests', () => {
       expect(getLatestRun).toHaveBeenCalledWith('portfolio')
     })
 
-    const summary = await screen.findByRole('region', { name: /run summary/i })
+    const summary = await screen.findByRole('region', { name: /运行摘要/i })
     const scoped = within(summary)
 
-    expect(scoped.getByText('Backend API')).toBeInTheDocument()
-    expect(scoped.getByText('Compat run')).toBeInTheDocument()
+    expect(scoped.getByText('后端 API')).toBeInTheDocument()
+    expect(scoped.getByText('兼容模式')).toBeInTheDocument()
 
     // The same mode reason should appear both in summary and state panel.
     const reasonMatches = await screen.findAllByText((content) => content.includes(compatReason))
     expect(reasonMatches.length).toBeGreaterThanOrEqual(2)
 
-    expect(screen.getByText('Backend compatibility mode')).toBeInTheDocument()
+    expect(screen.getByText('后端兼容模式')).toBeInTheDocument()
   })
 
   it('shows run state transition from running to result on Run Experiment', async () => {
@@ -154,8 +154,8 @@ describe('WorkbenchPage smoke tests', () => {
       expect(getLatestRun).toHaveBeenCalledWith('portfolio')
     })
 
-    const runButton = await screen.findByRole('button', { name: 'Run Experiment' })
-    const refreshButton = screen.getByRole('button', { name: 'Refresh Latest' })
+    const runButton = await screen.findByRole('button', { name: '开始运行' })
+    const refreshButton = screen.getByRole('button', { name: '刷新最新结果' })
     expect(runButton).toBeEnabled()
     expect(refreshButton).toBeEnabled()
 
@@ -165,35 +165,35 @@ describe('WorkbenchPage smoke tests', () => {
       expect(runExperiment).toHaveBeenCalledWith({ scenarioId: 'portfolio', runMode: 'exact' })
     })
 
-    expect(screen.getByRole('button', { name: 'Running...' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Refresh Latest' })).toBeDisabled()
-    expect(screen.getByText('Run in progress')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '运行中...' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '刷新最新结果' })).toBeDisabled()
+    expect(screen.getByText('运行进行中')).toBeInTheDocument()
 
     resolveRun(
       buildRunPayload({
         mode: 'compat',
-        note: 'Compatibility mode due to missing optional solver dependency.',
+        note: '兼容模式：缺少可选求解器依赖。',
         generatedAt: '2026-03-10T11:00:00.000Z',
       }),
     )
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Run Experiment' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: '开始运行' })).toBeEnabled()
     })
-    expect(screen.getByRole('button', { name: 'Refresh Latest' })).toBeEnabled()
-    expect(screen.getByText('Backend compatibility mode')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '刷新最新结果' })).toBeEnabled()
+    expect(screen.getByText('后端兼容模式')).toBeInTheDocument()
   })
 
   it('renders consistent fallback messaging for Refresh Latest with 404 no latest', async () => {
-    const noLatestReason = 'No latest run exists on backend yet (NOT_FOUND).'
+    const noLatestReason = '后端暂无最新运行结果（NOT_FOUND）。'
     const noLatestNotice =
-      'No latest backend run found for this scenario yet. Run Experiment once to create it. Showing fallback run data.'
+      '该场景暂未找到后端最新运行结果，请先执行一次“开始运行”。当前展示回退运行结果。'
 
     getLatestRun
       .mockResolvedValueOnce(
         buildRunPayload({
           mode: 'compat',
-          note: 'Compatibility mode due to missing optional solver dependency.',
+          note: '兼容模式：缺少可选求解器依赖。',
         }),
       )
       .mockResolvedValueOnce(
@@ -213,33 +213,33 @@ describe('WorkbenchPage smoke tests', () => {
       expect(getLatestRun).toHaveBeenCalledWith('portfolio')
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh Latest' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新最新结果' }))
 
     await waitFor(() => {
       expect(getLatestRun).toHaveBeenCalledTimes(2)
     })
 
-    const summary = await screen.findByRole('region', { name: /run summary/i })
+    const summary = await screen.findByRole('region', { name: /运行摘要/i })
     const scoped = within(summary)
-    expect(scoped.getByText('Frontend fallback')).toBeInTheDocument()
-    expect(scoped.getByText('Fallback demo')).toBeInTheDocument()
+    expect(scoped.getByText('前端回退')).toBeInTheDocument()
+    expect(scoped.getByText('回退演示')).toBeInTheDocument()
     expect(scoped.getByText((content) => content.includes(noLatestReason))).toBeInTheDocument()
 
-    expect(screen.getByText('Frontend fallback mode')).toBeInTheDocument()
+    expect(screen.getByText('前端回退模式')).toBeInTheDocument()
     expect(screen.getAllByText((content) => content.includes(noLatestReason)).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText(noLatestNotice)).toBeInTheDocument()
   })
 
   it('renders consistent fallback messaging for Refresh Latest network failure', async () => {
-    const networkReason = 'Network request failed: backend is unreachable from frontend.'
+    const networkReason = '网络请求失败：前端无法连接后端。'
     const networkNotice =
-      'Network failure: cannot reach backend API. Check VITE_API_BASE_URL, SSH tunnel status, and backend service health. Showing fallback run data.'
+      '网络异常：无法连接后端 API。请检查 VITE_API_BASE_URL、SSH 隧道与后端服务状态。当前展示回退运行结果。'
 
     getLatestRun
       .mockResolvedValueOnce(
         buildRunPayload({
           mode: 'compat',
-          note: 'Compatibility mode due to missing optional solver dependency.',
+          note: '兼容模式：缺少可选求解器依赖。',
         }),
       )
       .mockResolvedValueOnce(
@@ -259,19 +259,19 @@ describe('WorkbenchPage smoke tests', () => {
       expect(getLatestRun).toHaveBeenCalledWith('portfolio')
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh Latest' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新最新结果' }))
 
     await waitFor(() => {
       expect(getLatestRun).toHaveBeenCalledTimes(2)
     })
 
-    const summary = await screen.findByRole('region', { name: /run summary/i })
+    const summary = await screen.findByRole('region', { name: /运行摘要/i })
     const scoped = within(summary)
-    expect(scoped.getByText('Frontend fallback')).toBeInTheDocument()
-    expect(scoped.getByText('Fallback demo')).toBeInTheDocument()
+    expect(scoped.getByText('前端回退')).toBeInTheDocument()
+    expect(scoped.getByText('回退演示')).toBeInTheDocument()
     expect(scoped.getByText((content) => content.includes(networkReason))).toBeInTheDocument()
 
-    expect(screen.getByText('Frontend fallback mode')).toBeInTheDocument()
+    expect(screen.getByText('前端回退模式')).toBeInTheDocument()
     expect(screen.getAllByText((content) => content.includes(networkReason)).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText(networkNotice)).toBeInTheDocument()
   })
@@ -280,12 +280,12 @@ describe('WorkbenchPage smoke tests', () => {
     getLatestRun.mockReset()
     const initialCompat = buildRunPayload({
       mode: 'compat',
-      note: 'Compat mode with optional solver path.',
+      note: '兼容模式：走可选求解路径。',
       generatedAt: 'generated-before-compat',
     })
     const refreshedCompat = buildRunPayload({
       mode: 'compat',
-      note: 'Compat mode with optional solver path.',
+      note: '兼容模式：走可选求解路径。',
       generatedAt: 'generated-after-compat',
     })
     const deferred = createDeferred()
@@ -297,31 +297,31 @@ describe('WorkbenchPage smoke tests', () => {
 
     await screen.findByText('generated-before-compat')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh Latest' }))
-    expect(screen.getByRole('button', { name: 'Refreshing...' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Run Experiment' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '刷新最新结果' }))
+    expect(screen.getByRole('button', { name: '刷新中...' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '开始运行' })).toBeDisabled()
 
     deferred.resolve(refreshedCompat)
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Refresh Latest' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: '刷新最新结果' })).toBeEnabled()
     })
-    expect(screen.getByRole('button', { name: 'Run Experiment' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '开始运行' })).toBeEnabled()
     expect(screen.queryByText('generated-before-compat')).not.toBeInTheDocument()
     expect(screen.getByText('generated-after-compat')).toBeInTheDocument()
-    expect(screen.getByText('Compat run')).toBeInTheDocument()
+    expect(screen.getByText('兼容模式')).toBeInTheDocument()
   })
 
   it('handles Refresh Latest success flow in real mode with button and timestamp update', async () => {
     getLatestRun.mockReset()
     const initialReal = buildRunPayload({
       mode: 'real',
-      note: 'Real backend execution completed.',
+      note: '真实后端执行已完成。',
       generatedAt: 'generated-before-real',
     })
     const refreshedReal = buildRunPayload({
       mode: 'real',
-      note: 'Real backend execution completed.',
+      note: '真实后端执行已完成。',
       generatedAt: 'generated-after-real',
     })
     const deferred = createDeferred()
@@ -333,33 +333,33 @@ describe('WorkbenchPage smoke tests', () => {
 
     await screen.findByText('generated-before-real')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh Latest' }))
-    expect(screen.getByRole('button', { name: 'Refreshing...' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Run Experiment' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '刷新最新结果' }))
+    expect(screen.getByRole('button', { name: '刷新中...' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '开始运行' })).toBeDisabled()
 
     deferred.resolve(refreshedReal)
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Refresh Latest' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: '刷新最新结果' })).toBeEnabled()
     })
-    expect(screen.getByRole('button', { name: 'Run Experiment' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '开始运行' })).toBeEnabled()
     expect(screen.queryByText('generated-before-real')).not.toBeInTheDocument()
     expect(screen.getByText('generated-after-real')).toBeInTheDocument()
-    expect(screen.getByText('Real run')).toBeInTheDocument()
-    expect(screen.getByText('Backend real execution')).toBeInTheDocument()
+    expect(screen.getByText('真实执行')).toBeInTheDocument()
+    expect(screen.getByText('后端真实执行')).toBeInTheDocument()
   })
 
   it('refreshes latest data, summary, and state panel after scenario switch', async () => {
     const scenarioData = [
       {
         id: 'portfolio',
-        name: 'Portfolio Optimization',
-        description: 'Portfolio scenario for smoke test',
+        name: '投资组合优化',
+        description: '投资组合场景（测试）',
       },
       {
         id: 'control',
-        name: 'Control Setcover',
-        description: 'Control scenario for smoke test',
+        name: '控制集覆盖',
+        description: '控制集覆盖场景（测试）',
       },
     ]
 
@@ -376,7 +376,7 @@ describe('WorkbenchPage smoke tests', () => {
         return Promise.resolve(
           buildRunPayload({
             mode: 'real',
-            note: 'Portfolio real run succeeded.',
+            note: '投资组合真实运行成功。',
             generatedAt: 'generated-portfolio',
           }),
         )
@@ -385,7 +385,7 @@ describe('WorkbenchPage smoke tests', () => {
         return Promise.resolve(
           buildRunPayload({
             mode: 'compat',
-            note: 'Control compat run due to optional dependency gap.',
+            note: '控制集覆盖使用兼容模式（可选依赖缺失）。',
             generatedAt: 'generated-control',
             data: {
               scenarioId: 'control',
@@ -402,22 +402,22 @@ describe('WorkbenchPage smoke tests', () => {
     await waitFor(() => {
       expect(getLatestRun).toHaveBeenCalledWith('portfolio')
     })
-    const initialSummary = await screen.findByRole('region', { name: /run summary/i })
-    expect(within(initialSummary).getByText('Portfolio Optimization')).toBeInTheDocument()
-    expect(screen.getByText('Real run')).toBeInTheDocument()
-    expect(screen.getByText('Backend real execution')).toBeInTheDocument()
+    const initialSummary = await screen.findByRole('region', { name: /运行摘要/i })
+    expect(within(initialSummary).getByText('投资组合优化')).toBeInTheDocument()
+    expect(screen.getByText('真实执行')).toBeInTheDocument()
+    expect(screen.getByText('后端真实执行')).toBeInTheDocument()
 
-    fireEvent.change(screen.getByLabelText('Scenario'), { target: { value: 'control' } })
+    fireEvent.change(screen.getByLabelText('场景'), { target: { value: 'control' } })
 
     await waitFor(() => {
       expect(getLatestRun).toHaveBeenCalledWith('control')
     })
 
-    const switchedSummary = await screen.findByRole('region', { name: /run summary/i })
-    expect(within(switchedSummary).getByText('Control Setcover')).toBeInTheDocument()
-    expect(screen.getByText('Compat run')).toBeInTheDocument()
-    expect(screen.getByText('Backend compatibility mode')).toBeInTheDocument()
-    expect(screen.getAllByText((content) => content.includes('Control compat run due to optional dependency gap.')).length).toBeGreaterThanOrEqual(2)
+    const switchedSummary = await screen.findByRole('region', { name: /运行摘要/i })
+    expect(within(switchedSummary).getByText('控制集覆盖')).toBeInTheDocument()
+    expect(screen.getByText('兼容模式')).toBeInTheDocument()
+    expect(screen.getByText('后端兼容模式')).toBeInTheDocument()
+    expect(screen.getAllByText((content) => content.includes('控制集覆盖使用兼容模式（可选依赖缺失）。')).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText('generated-control')).toBeInTheDocument()
   })
 
@@ -425,19 +425,19 @@ describe('WorkbenchPage smoke tests', () => {
     const scenarioData = [
       {
         id: 'portfolio',
-        name: 'Portfolio Optimization',
-        description: 'Portfolio scenario for smoke test',
+        name: '投资组合优化',
+        description: '投资组合场景（测试）',
       },
       {
         id: 'control',
-        name: 'Control Setcover',
-        description: 'Control scenario for smoke test',
+        name: '控制集覆盖',
+        description: '控制集覆盖场景（测试）',
       },
     ]
     const slowOldRequest = createDeferred()
     const fastNewRequest = createDeferred()
-    const controlReason = 'Control compat run from latest endpoint.'
-    const latePortfolioReason = 'Late portfolio response should be ignored.'
+    const controlReason = '控制集覆盖从 latest 端点返回兼容结果。'
+    const latePortfolioReason = '延迟到达的投资组合响应应被忽略。'
 
     getScenarios.mockResolvedValueOnce({
       source: 'api',
@@ -463,7 +463,7 @@ describe('WorkbenchPage smoke tests', () => {
       expect(getLatestRun).toHaveBeenCalledWith('portfolio')
     })
 
-    fireEvent.change(screen.getByLabelText('Scenario'), { target: { value: 'control' } })
+    fireEvent.change(screen.getByLabelText('场景'), { target: { value: 'control' } })
 
     await waitFor(() => {
       expect(getLatestRun).toHaveBeenCalledWith('control')
@@ -491,16 +491,16 @@ describe('WorkbenchPage smoke tests', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    const finalSummary = screen.getByRole('region', { name: /run summary/i })
+    const finalSummary = screen.getByRole('region', { name: /运行摘要/i })
     const scoped = within(finalSummary)
-    expect(scoped.getByText('Control Setcover')).toBeInTheDocument()
-    expect(scoped.getByText('Compat run')).toBeInTheDocument()
+    expect(scoped.getByText('控制集覆盖')).toBeInTheDocument()
+    expect(scoped.getByText('兼容模式')).toBeInTheDocument()
     expect(scoped.getByText((content) => content.includes(controlReason))).toBeInTheDocument()
     expect(scoped.getByText('generated-control-fast')).toBeInTheDocument()
-    expect(screen.getByText('Backend compatibility mode')).toBeInTheDocument()
+    expect(screen.getByText('后端兼容模式')).toBeInTheDocument()
     expect(screen.queryByText('generated-portfolio-late')).not.toBeInTheDocument()
     expect(screen.queryByText(latePortfolioReason)).not.toBeInTheDocument()
-    expect(screen.queryByText('Backend real execution')).not.toBeInTheDocument()
+    expect(screen.queryByText('后端真实执行')).not.toBeInTheDocument()
   })
 
   it('shows requested versus actual mode and diagnostics for power-118', async () => {
@@ -509,8 +509,8 @@ describe('WorkbenchPage smoke tests', () => {
       data: [
         {
           id: 'power-118',
-          name: 'Power 118 SCUC',
-          description: 'Power scenario for smoke test',
+          name: '电力 118 节点 SCUC',
+          description: '电力场景（测试）',
         },
       ],
       notice: '',
@@ -519,7 +519,7 @@ describe('WorkbenchPage smoke tests', () => {
     getLatestRun.mockResolvedValueOnce(
       buildRunPayload({
         mode: 'real',
-        note: 'Power118 hybrid requested and exact fallback used.',
+        note: 'Power118 请求 hybrid，最终回退 exact。',
         data: {
           scenarioId: 'power-118',
           requestedRunMode: 'ml',
@@ -543,10 +543,10 @@ describe('WorkbenchPage smoke tests', () => {
       expect(getLatestRun).toHaveBeenCalledWith('power-118')
     })
 
-    expect(screen.getByLabelText('Power 118 diagnostics')).toBeInTheDocument()
-    expect(screen.getByText('Requested mode: ml')).toBeInTheDocument()
-    expect(screen.getByText('Actual mode: exact')).toBeInTheDocument()
-    expect(screen.getByText('Fallback reason: ml model unavailable: artifact missing')).toBeInTheDocument()
-    expect(screen.getByText(/Requested ml, used exact/i)).toBeInTheDocument()
+    expect(screen.getByLabelText('电力 118 诊断信息')).toBeInTheDocument()
+    expect(screen.getByText('请求模式：ml')).toBeInTheDocument()
+    expect(screen.getByText('实际模式：exact')).toBeInTheDocument()
+    expect(screen.getByText('回退原因：ml model unavailable: artifact missing')).toBeInTheDocument()
+    expect(screen.getByText(/请求模式 ml，实际使用 exact/i)).toBeInTheDocument()
   })
 })

@@ -1,15 +1,15 @@
 import { NavLink } from 'react-router-dom'
 
 const navItems = [
-  { to: '/', label: 'Home' },
-  { to: '/workbench', label: 'Workbench' },
+  { to: '/', label: '总览' },
+  { to: '/workbench', label: '实验台' },
 ]
 
 function AppShell({ children }) {
   return (
     <>
       <a className="skip-link" href="#main-content">
-        Skip to main content
+        跳转到主内容
       </a>
 
       <div className="bg-orb bg-orb-one" aria-hidden="true" />
@@ -19,15 +19,15 @@ function AppShell({ children }) {
         <div className="shell shell-header">
           <NavLink className="brand" to="/">
             <span className="brand-mark" aria-hidden="true">
-              M
+              核
             </span>
             <span className="brand-text">
-              <strong>mlopt</strong>
-              <small>Experiment Dashboard</small>
+              <strong>优化实验控制台</strong>
+              <small>实验运行与结果分析</small>
             </span>
           </NavLink>
 
-          <nav aria-label="Primary navigation">
+          <nav aria-label="主导航">
             <ul className="nav-list">
               {navItems.map((item) => (
                 <li key={item.to}>
@@ -52,7 +52,7 @@ function AppShell({ children }) {
 
       <footer className="site-footer">
         <div className="shell footer-content">
-          <p>Optimization Experiment Dashboard built with React + Vite. Existing core solver logic remains unchanged.</p>
+          <p>由 React + Vite 构建的优化实验前端。仅升级界面与交互表达，核心求解逻辑保持不变。</p>
         </div>
       </footer>
     </>

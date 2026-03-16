@@ -1,11 +1,13 @@
+import { memo } from 'react'
+
 function MetricCard({ label, value, hint, tooltip }) {
   return (
     <article className="metric-card">
       <p className="metric-label-row">
         <span className="metric-label">{label}</span>
         {tooltip ? (
-          <span className="metric-tip" title={tooltip} aria-label={`${label} explanation`}>
-            i
+          <span className="metric-tip" title={tooltip} aria-label={`${label}说明`}>
+            ?
           </span>
         ) : null}
       </p>
@@ -15,4 +17,4 @@ function MetricCard({ label, value, hint, tooltip }) {
   )
 }
 
-export default MetricCard
+export default memo(MetricCard)

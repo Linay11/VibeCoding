@@ -1,6 +1,8 @@
+import { memo } from 'react'
+
 function ComparisonChart({ rows = [], formatValue }) {
   if (!Array.isArray(rows) || rows.length === 0) {
-    return <p className="chart-empty">No comparison data yet.</p>
+    return <p className="chart-empty">暂无对比数据</p>
   }
 
   const max = Math.max(...rows.map((item) => Number(item.value ?? 0)), 1e-9)
@@ -12,11 +14,11 @@ function ComparisonChart({ rows = [], formatValue }) {
 
   return (
     <div className="comparison-chart">
-      {rows.map((row) => {
+      {rows.map((row, index) => {
         const value = Number(row.value ?? 0)
         const pct = Math.max(8, (value / max) * 100)
         return (
-          <div className="comparison-row" key={row.label}>
+          <div className="comparison-row" key={`${row.label ?? 'row'}-${index}`}>
             <div className="comparison-head">
               <span>{row.label}</span>
               <strong>{formatter(value)}</strong>
@@ -31,4 +33,4 @@ function ComparisonChart({ rows = [], formatValue }) {
   )
 }
 
-export default ComparisonChart
+export default memo(ComparisonChart)

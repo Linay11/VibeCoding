@@ -1,10 +1,12 @@
+import { memo } from 'react'
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
 function TrendChart({ points = [], unit = 'ms' }) {
   if (!Array.isArray(points) || points.length === 0) {
-    return <p className="chart-empty">No trend data yet.</p>
+    return <p className="chart-empty">暂无趋势数据</p>
   }
 
   const width = 520
@@ -53,7 +55,7 @@ function TrendChart({ points = [], unit = 'ms' }) {
         className="trend-chart"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label="Solve time trend chart"
+        aria-label="求解耗时趋势图"
         preserveAspectRatio="none"
       >
         {ticks.map((tick) => (
@@ -82,4 +84,4 @@ function TrendChart({ points = [], unit = 'ms' }) {
   )
 }
 
-export default TrendChart
+export default memo(TrendChart)

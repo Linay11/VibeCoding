@@ -1,23 +1,23 @@
 export const mockScenarios = [
   {
     id: 'portfolio',
-    name: 'Portfolio Optimization',
-    description: 'Multi-period portfolio allocation with risk and transaction constraints.',
+    name: '投资组合优化',
+    description: '多周期投资配置，考虑风险和交易约束。',
   },
   {
     id: 'control',
-    name: 'Control Setcover',
-    description: 'Control horizon optimization with switching and load profile constraints.',
+    name: '控制集覆盖',
+    description: '含切换与负载曲线约束的控制周期优化。',
   },
   {
     id: 'obstacle',
-    name: 'Obstacle Avoidance',
-    description: 'Path planning optimization with obstacle-bound geometric constraints.',
+    name: '障碍规避路径',
+    description: '含障碍几何边界约束的路径规划优化。',
   },
   {
     id: 'power-118',
-    name: 'Power 118 SCUC',
-    description: 'IEEE 118-bus SCUC scenario with generator commitment and dispatch outputs.',
+    name: '电力 118 节点 SCUC',
+    description: 'IEEE 118 节点机组组合与出力调度场景。',
   },
 ]
 
@@ -41,9 +41,9 @@ export function buildMockRun(scenarioId) {
   }))
 
   const strategies = [
-    { id: 's-1', name: 'Strategy A', feasible: true, cost: randomInRange(8.2, 9.6), rank: 1 },
-    { id: 's-2', name: 'Strategy B', feasible: true, cost: randomInRange(9.0, 10.3), rank: 2 },
-    { id: 's-3', name: 'Strategy C', feasible: Math.random() > 0.35, cost: randomInRange(9.8, 12.0), rank: 3 },
+    { id: 's-1', name: '策略 A', feasible: true, cost: randomInRange(8.2, 9.6), rank: 1 },
+    { id: 's-2', name: '策略 B', feasible: true, cost: randomInRange(9.0, 10.3), rank: 2 },
+    { id: 's-3', name: '策略 C', feasible: Math.random() > 0.35, cost: randomInRange(9.8, 12.0), rank: 3 },
   ]
 
   return {
